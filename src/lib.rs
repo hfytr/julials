@@ -1,2 +1,2 @@
 mod lexer;
-pub use lexer::{NFA, Lexeme};
+pub use lexer::{DFA, Lexeme};
