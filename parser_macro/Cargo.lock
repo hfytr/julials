@@ -3,14 +3,6 @@
 version = 4
 
 [[package]]
-name = "julials"
-version = "0.1.0"
-dependencies = [
- "parser_macro",
- "shared_structs",
-]
-
-[[package]]
 name = "parser_macro"
 version = "0.1.0"
 dependencies = [
