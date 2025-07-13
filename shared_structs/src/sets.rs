@@ -152,12 +152,19 @@ where
     pub fn last(&self) -> Option<Rc<T>> {
         self.vec.last().map(Rc::clone)
     }
-    pub fn get(&self, set: &T) -> Option<usize> {
-        self.set.get(set).map(|x| *x)
+    pub fn get(&self, x: &T) -> Option<usize> {
+        self.set.get(x).map(|x| *x)
     }
-    pub fn push(&mut self, t: T) {
-        self.vec.push(Rc::new(t));
-        self.set.insert(self.last().unwrap(), self.len() - 1);
+    /// @return (inserted elements index, true if the element is new)
+    pub fn push(&mut self, t: T) -> (usize, bool) {
+        if let Some(ind) = self.set.get(&t) {
+            (*ind, false)
+        } else {
+            let rc = Rc::new(t);
+            self.set.insert(Rc::clone(&rc), self.len());
+            self.vec.push(rc);
+            (self.vec.len() - 1, true)
+        }
     }
 }
 

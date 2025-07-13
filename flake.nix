@@ -23,6 +23,7 @@
           ];
           LD_LIBRARY_PATH = "${lib.makeLibraryPath nativeBuildInputs}";
           RUST_BACKTRACE = 1;
+          RUSTFLAGS = "-Zproc-macro-backtrace";
         };
       }
     );

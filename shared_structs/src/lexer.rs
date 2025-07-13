@@ -1,5 +1,5 @@
-use crate::sets::{IndexableSet, USizeSet};
 use super::fmt_maybe_arr;
+use crate::sets::{IndexableSet, USizeSet};
 use proc_macro2::{Punct, Spacing, TokenStream};
 use quote::{ToTokens, TokenStreamExt, quote};
 use std::{collections::BTreeMap, fmt::Debug, rc::Rc};
@@ -129,7 +129,7 @@ impl Debug for RegexDFA {
 }
 
 impl RegexDFA {
-    pub fn from_regexi(regexi: Vec<String>) -> Self {
+    pub fn from_regexi(regexi: Vec<(String, usize)>) -> Self {
         let nfa = NFA::from_regexi(regexi);
         let mut res = Self {
             states: IndexableSet::from([nfa.epsilon_closure(0)]),
@@ -154,8 +154,7 @@ impl RegexDFA {
                             .iter()
                             .fold(None, |acc, nfa_state| acc.or(nfa.fin[nfa_state])),
                     );
-                    res.states.push(new_state);
-                    *stack.last().unwrap()
+                    res.states.push(new_state).0
                 });
                 for i in (edge.0..=edge.1).map(usize::from) {
                     if let Some(old_state) = char_state[i] {
@@ -169,8 +168,7 @@ impl RegexDFA {
                                         .iter()
                                         .fold(None, |acc, nfa_state| nfa.fin[nfa_state].or(acc)),
                                 );
-                                res.states.push(new_state);
-                                res.states.len() - 1
+                                res.states.push(new_state).0
                             });
                             new_state_map.insert(old_state, new_ind);
                             Some(new_ind)
@@ -263,15 +261,14 @@ impl NFA {
         res
     }
 
-    pub fn from_regexi(regexi: Vec<String>) -> Self {
+    pub fn from_regexi(regexi: Vec<(String, usize)>) -> Self {
         regexi
             .iter()
-            .enumerate()
-            .fold(Self::from_regex("").0, |mut acc, (i, regex)| {
-                let (mut new_nfa, new_fin) = Self::from_regex(regex);
+            .fold(Self::from_regex("").0, |mut acc, regex| {
+                let (mut new_nfa, new_fin) = Self::from_regex(&regex.0);
                 let len = acc.edges.len();
                 acc.fin.resize(len + new_nfa.edges.len(), None);
-                acc.fin[new_fin + len] = Some(i);
+                acc.fin[new_fin + len] = Some(regex.1);
                 acc.edges[0].push((None, len));
                 acc.edges.append(&mut new_nfa.edges);
                 acc
@@ -311,7 +308,7 @@ impl NFA {
                 }
                 (Some(_), [b'.', ..]) if !escaped => panic!("ERROR: . in []"),
                 (None, [b'.', tail @ ..]) if !escaped => {
-                    let new_node = res.edges.len() ;
+                    let new_node = res.edges.len();
                     res.edges[last.1].push((Some((u8::MIN, u8::MAX)), new_node));
                     res.edges.push(vec![]);
                     last = (last.1, new_node);
@@ -338,10 +335,10 @@ impl NFA {
                 }
                 (Some(_), [b'(', ..]) => panic!("ERROR; () in []."),
                 (_, [b'(', tail @ ..]) if !escaped => {
-                    groups.push((last.1, res.edges.len() ));
+                    groups.push((last.1, res.edges.len()));
                     in_group += 1;
                     res.edges.push(vec![]);
-                    let new_node = res.edges.len() ;
+                    let new_node = res.edges.len();
                     res.edges[last.1].push((None, new_node));
                     last = (last.1, new_node);
                     res.edges.push(vec![]);
@@ -358,15 +355,15 @@ impl NFA {
                 (_, [b'|', tail @ ..]) if !escaped && in_group != 0 => {
                     res.edges[last.1].push((None, groups.last().unwrap().1));
                     last = (0, groups.last().unwrap().0);
-                    let new_node = res.edges.len() ;
+                    let new_node = res.edges.len();
                     res.edges[last.1].push((None, new_node));
                     last = (last.1, new_node);
                     res.edges.push(vec![]);
                     s = tail;
                 }
                 (_, [b'[', tail @ ..]) if !escaped => {
-                    sq = Some((last.1, res.edges.len() ));
-                    last = (last.1, res.edges.len() );
+                    sq = Some((last.1, res.edges.len()));
+                    last = (last.1, res.edges.len());
                     sq_chars = [0; 4];
                     res.edges.push(vec![]);
                     s = tail;
@@ -412,9 +409,9 @@ impl NFA {
                         c = escape_lookup[c as usize].unwrap_or(c);
                         escaped = false;
                     }
-                    let new_node = res.edges.len() ;
+                    let new_node = res.edges.len();
                     res.edges[last.1].push((Some((c, c)), new_node));
-                    last = (res.edges.len() , res.edges.len());
+                    last = (res.edges.len(), res.edges.len());
                     res.edges.push(vec![]);
                     s = tail;
                 }

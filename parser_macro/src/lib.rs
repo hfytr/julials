@@ -1,20 +1,47 @@
 mod lexer;
 
-use crate::lexer::{Production, process_lexemes};
+use crate::lexer::{Production, ProductionType, parse_production, process_productions};
 use proc_macro2::{Ident, Punct, Spacing, TokenStream};
-use quote::{TokenStreamExt, quote};
-use shared_structs::{RegexDFA, Trie};
+use quote::{ToTokens, TokenStreamExt, quote};
+use shared_structs::{ParseTable, RegexDFA, Trie};
 use std::process::exit;
-use syn::{Error, Token, parse::Parse, punctuated::Punctuated};
+use syn::{Error, Token, parse::Parse};
 
-const ERR_FIRST_NOT_STATE: &'static str =
-    r#"The first item within the parser macro must be of the form "State(<State-Type>)""#;
-const ERR_SECOND_NOT_START: &'static str =
-    r#"The second item within the parser macro must be of the form "Start(<Production-Name>)""#;
-const ERR_NO_START_PROD: &'static str = r#"You must specify a start symbol"#;
+const ERR_NO_START_PROD: &'static str =
+    "ERROR: You must specify the starting state with Start(...)";
+const ERR_STATE_NOT_SPECIFIED: &'static str =
+    "ERROR: You must specify the lexer state with State(...)";
+const ERR_MISSING_ELEM: &'static str =
+    "ERROR: Expected State | Start | <Rule-Name> at beginning of element.";
+const ERR_MISSING_STATE_TYPE: &'static str =
+    "ERROR: Expected parenthesized lexer state type after State element.";
+const ERR_MISSING_INIT_STATE: &'static str =
+    "ERROR: Expected initial lexer state after = in State element.";
+const ERR_MISSING_START_PROD: &'static str =
+    "ERROR: Expected parenthesized production name after Start element.";
+const ERR_LEADING_COMMA: &'static str = "ERROR: Expected comma after ";
 
 extern crate proc_macro;
 
+/// The parser macro takes comma separated arguments of three types:
+/// - State: This argument must only be passed once. It is of the form State(<StateTypeName>),
+///   and specifies the state which will be maintained during the lexing stage of your parser
+/// - Start: This argument must only passed once. It is of the form Start(<ElementName>) and
+///   must specify an element of your language previously / later defined.
+/// - Elements: This argument must appear at least once. It specifies the various elements of
+///   your language, and takes three sub-forms:
+///   - Regex: Specifies a regex defined lexeme within your language. It must be of the form:
+///     <LexemeName> => Regex(<ProducedNodeType>, "my-regex.*") <optional callback>
+///     where the optional callback is a closure of form:
+///       |state: &mut State, matched_text: &str| -> Node
+///   - Literal: Specifies a literal defined lexeme within your language. It is of the same form as
+///     a Regex, except it is specified as:
+///       <LexemeName> => Literal(...) <optional-callback>
+///   - Rule: Specifies a branch node in your AST. It must be of the form:
+///       <RuleName> => Rule(<NodeInnerType>, <rule_1> | <rule_2> | ... )
+///     where each rule is of the form: elem1 elem2 elem3 ... <optional_callback>
+///     the optional callback is a closure of the form:
+///       |children: Vec<Box<Node>>| -> Node {...}
 #[proc_macro]
 pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse(input).expect("Proc Macro errored parsing input.");
@@ -27,46 +54,69 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     }
 }
 
+trait Context {
+    fn context(self, cx: &str) -> Self;
+}
+
+impl<T> Context for syn::Result<T> {
+    fn context(self, cx: &str) -> Self {
+        self.map_err(|e| Error::new(e.span(), format!("{cx}: {e}")))
+    }
+}
+
 struct MacroBody {
     dfa: RegexDFA,
     trie: Trie,
-    start_prod: String,
-    lexemes: Vec<Production>,
+    productions: Vec<Production>,
     state_type: syn::Ident,
     init_state: syn::Expr,
+    parser: ParseTable,
 }
 
 impl Parse for MacroBody {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let ident: syn::Ident = input.parse()?;
-        if ident.to_string().as_str() != "State" {
-            return Err(Error::new_spanned(ident, ERR_FIRST_NOT_STATE));
+        let mut state = None;
+        let mut start_prod = None;
+        let mut productions: Vec<Production> = vec![];
+        while !input.is_empty() {
+            let ident = input.parse().context(ERR_MISSING_ELEM)?;
+            if ident == "State" {
+                let content;
+                syn::parenthesized!(content in input);
+                let state_type = content.parse().context(ERR_MISSING_STATE_TYPE)?;
+                content
+                    .parse::<Token![=]>()
+                    .context(ERR_MISSING_INIT_STATE)?;
+                let init_state = content.parse().context(ERR_MISSING_INIT_STATE)?;
+                state = Some((init_state, state_type));
+            } else if ident == "Start" {
+                let content;
+                syn::parenthesized!(content in input);
+                start_prod = Some(
+                    content
+                        .parse::<Ident>()
+                        .context(ERR_MISSING_START_PROD)?
+                        .to_string(),
+                );
+            } else {
+                productions.push(parse_production(ident, &input)?);
+            }
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>().context(ERR_LEADING_COMMA)?;
+            }
         }
-        let content;
-        syn::parenthesized!(content in input);
-        let state_type = content.parse()?;
-        input.parse::<Token![=]>()?;
-        let init_state = input.parse()?;
-        input.parse::<Token![,]>()?;
-        let ident: syn::Ident = input.parse()?;
-        if ident.to_string().as_str() != "Start" {
-            return Err(Error::new_spanned(ident, ERR_SECOND_NOT_START));
-        }
-        let content;
-        syn::parenthesized!(content in input);
-        let start_prod = content.parse::<Ident>()?.to_string();
-        input.parse::<Token![,]>()?;
-        let lexemes: Vec<_> = Punctuated::<_, Token![,]>::parse_terminated(input)?
-            .into_iter()
-            .collect();
-        let (dfa, trie) = process_lexemes(&lexemes, &start_prod);
+        let tot_span = input.span();
+        let (init_state, state_type) =
+            state.ok_or(Error::new(tot_span, ERR_STATE_NOT_SPECIFIED))?;
+        let start_prod = start_prod.ok_or(Error::new(tot_span, ERR_NO_START_PROD))?;
+        let (dfa, trie, parser) = process_productions(&productions, &start_prod);
         Ok(Self {
             dfa,
             trie,
-            start_prod,
-            lexemes,
             state_type,
             init_state,
+            productions,
+            parser,
         })
     }
 }
@@ -75,76 +125,69 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
     let MacroBody {
         dfa,
         trie,
-        start_prod,
-        lexemes,
+        productions,
         state_type,
         init_state,
+        parser,
     } = syn::parse2(input)?;
-    let num_lexemes = lexemes.len() + 1;
-    let mut lexeme_arr = TokenStream::new();
-    lexeme_arr.append_separated(
-        lexemes.iter().map(|lexeme| {
-            let lexeme_name = &lexeme.name;
-            quote! { Lexeme::#lexeme_name }
+    let mut node_enum = TokenStream::new();
+    node_enum.append_separated(
+        productions.iter().map(|prod| {
+            let prod_name = &prod.name;
+            let prod_type = &prod.data_type;
+            quote! { #prod_name(#prod_type) }
         }),
         Punct::new(',', Spacing::Alone),
     );
-    let mut lexeme_match_body = TokenStream::new();
-    lexeme_match_body.append_separated(
-        (1usize..).zip(lexemes.iter()).map(|(i, lexeme)| {
-            let name = &lexeme.name;
-            quote! { Lexeme::#name => #i, }
-        }),
-        Punct::new(',', Spacing::Alone),
-    );
-    let mut lexeme_enum = TokenStream::new();
-    lexeme_enum.append_all(lexemes.iter().map(|lexeme| {
-        let lexeme_type = lexeme
-            .callback
-            .as_ref()
-            .and_then(|callback| match callback.output {
-                syn::ReturnType::Default => None,
-                syn::ReturnType::Type(_, ref ret_type) => Some(quote! { (#ret_type) }),
-            });
-        let lexeme_name = &lexeme.name;
-        quote! { #lexeme_name #lexeme_type, }
-    }));
-    let mut callbacks_inner = TokenStream::new();
-    callbacks_inner.append_separated(
-        lexemes.iter().map(|lexeme| {
-            let lexeme_name = &lexeme.name;
-            if let Some(ref callback) = lexeme.callback {
-                quote! {
-                    std::boxed::Box::new(|state, s| {
-                        let callback_raw = #callback;
-                        Lexeme::#lexeme_name(callback_raw(state, s))
-                    })
+    let mut lexeme_callbacks_inner = TokenStream::new();
+    lexeme_callbacks_inner.append_separated(
+        productions
+            .iter()
+            .filter(|production| !matches!(production.prod_type, ProductionType::Rule(_)))
+            .map(|production| {
+                if let ProductionType::Literal((_, Some(ref callback))) = production.prod_type {
+                    callback.to_token_stream()
+                } else if let ProductionType::Regex((_, Some(ref callback))) = production.prod_type
+                {
+                    quote! { Box::new(#callback) }
+                } else {
+                    let prod_name = &production.name;
+                    let prod_type = &production.data_type;
+                    quote! { Box::new(|_, _| Node::#prod_name(#prod_type::default())) }
                 }
+            }),
+        Punct::new(',', Spacing::Alone),
+    );
+    let mut rule_callbacks_inner = TokenStream::new();
+    rule_callbacks_inner.append_separated(
+        productions.into_iter().flat_map(|production| {
+            if let ProductionType::Rule(rules) = production.prod_type {
+                rules
             } else {
-                quote! { std::boxed::Box::new(|_, s| Lexeme::#lexeme_name) }
+                vec![]
             }
+            .into_iter()
+            .flat_map(|rules| {
+                rules.into_iter().map(|rule| {
+                    rule.1
+                        .map(|callback| callback.to_token_stream())
+                        .unwrap_or(quote! {
+                            |children| children[0]
+                        })
+                })
+            })
         }),
         Punct::new(',', Spacing::Alone),
     );
     Ok(quote! {
-        #[derive(Debug)]
-        enum Lexeme { EOF, #lexeme_enum }
-        impl Default for Lexeme {
-            fn default() -> Self {
-                Lexeme::EOF
-            }
-        }
-        impl Into<usize> for Lexeme {
-            fn into(self) -> usize {
-                match self { Lexeme::EOF => 0usize, #lexeme_match_body }
-            }
-        }
-        const ID_TO_LEXEME: [Lexeme; #num_lexemes] = [Lexeme::EOF, #lexeme_arr];
-        fn create_parsing_engine<'a, 'b>(s: &'a mut &'b str) -> shared_structs::Engine<'a, 'b, Lexeme, #state_type> {
+        enum Node { #node_enum }
+        fn create_parsing_engine<'a, 'b>(s: &'a mut &'b str) -> shared_structs::Engine<'a, 'b, Node, #state_type> {
             shared_structs::Engine::from_raw(
+                #parser,
                 #dfa,
                 #trie,
-                vec![#callbacks_inner],
+                vec![#lexeme_callbacks_inner],
+                vec![#rule_callbacks_inner],
                 #init_state,
                 s
             )
