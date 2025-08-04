@@ -9,7 +9,7 @@ use proc_macro2::{Punct, Spacing, TokenStream};
 use quote::{ToTokens, TokenStreamExt, quote};
 
 #[derive(Default, Clone, Eq, Ord, PartialEq, PartialOrd)]
-pub struct USizeSet(Vec<u64>);
+pub struct USizeSet(pub Vec<u64>);
 
 impl Debug for USizeSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -25,6 +25,9 @@ impl<'a> USizeSet {
         }
         self.0[i / 64] &= !(1 << (i % 64));
         self.0[i / 64] |= (b as u64) << (i % 64);
+        if self.0[i / 64] == 0 && i / 64 == self.0.len() - 1 {
+            self.0.pop();
+        }
     }
     pub fn get(&self, i: usize) -> bool {
         if i / 64 >= self.0.len() {
@@ -34,10 +37,18 @@ impl<'a> USizeSet {
     }
     pub fn iter(&'a self) -> USizeSetIterator<'a> {
         USizeSetIterator {
-            ind: self.0.len() - 1,
+            ind: self.0.len().checked_sub(1).unwrap_or(0),
             cur: *self.0.last().unwrap_or(&0),
             set: &self,
         }
+    }
+    pub fn is_subset(&self, other: &Self) -> bool {
+        self.0.len() <= other.0.len()
+            && self
+                .0
+                .iter()
+                .zip(other.0.iter())
+                .all(|(lhs, rhs)| rhs & lhs == *lhs)
     }
 }
 
@@ -47,9 +58,9 @@ impl<const N: usize> From<[u64; N]> for USizeSet {
     }
 }
 
-impl From<&Vec<u64>> for USizeSet {
-    fn from(value: &Vec<u64>) -> Self {
-        Self(value.clone())
+impl<const N: usize> From<[usize; N]> for USizeSet {
+    fn from(value: [usize; N]) -> Self {
+        value.into_iter().collect()
     }
 }
 
@@ -74,7 +85,7 @@ impl BitOrAssign<&USizeSet> for USizeSet {
     fn bitor_assign(&mut self, rhs: &Self) {
         let len = if rhs.0.len() > self.0.len() {
             let res = self.0.len();
-            self.0.resize(rhs.0.len(), 0);
+            self.0.extend_from_slice(&rhs.0[res..]);
             res
         } else {
             rhs.0.len()
@@ -85,22 +96,20 @@ impl BitOrAssign<&USizeSet> for USizeSet {
     }
 }
 
-impl BitOr for &USizeSet {
+impl BitOr<&USizeSet> for &USizeSet {
     type Output = USizeSet;
-    fn bitor(self, rhs: Self) -> Self::Output {
-        let mut res = self.clone();
-        res |= &rhs;
-        res
+    fn bitor(self, rhs: &USizeSet) -> Self::Output {
+        let mut result = rhs.clone();
+        result |= self;
+        result
     }
 }
 
-impl quote::ToTokens for USizeSet {
+impl ToTokens for USizeSet {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let mut vec_inner = TokenStream::new();
         vec_inner.append_separated(self.0.iter(), Punct::new(',', Spacing::Alone));
-        tokens.append_all(quote! {
-            shared_structs::USizeSet::from([#vec_inner])
-        });
+        tokens.append_all(quote! { vec![#vec_inner] });
     }
 }
 
@@ -166,6 +175,12 @@ where
             (self.vec.len() - 1, true)
         }
     }
+    pub fn to_vec(self) -> Vec<T> {
+        let IndexableSet { vec, .. } = self;
+        vec.into_iter()
+            .map(|rc| Rc::try_unwrap(rc).ok().unwrap())
+            .collect()
+    }
 }
 
 impl<T> Index<usize> for IndexableSet<T>
@@ -176,6 +191,19 @@ where
         &self.vec[index]
     }
     type Output = Rc<T>;
+}
+
+impl<T> From<Vec<T>> for IndexableSet<T>
+where
+    T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
+{
+    fn from(items: Vec<T>) -> Self {
+        let vec: Vec<_> = items.into_iter().map(Rc::new).collect();
+        Self {
+            set: BTreeMap::from_iter(vec.iter().enumerate().map(|(i, rc)| (Rc::clone(rc), i))),
+            vec,
+        }
+    }
 }
 
 impl<T, const N: usize> From<[T; N]> for IndexableSet<T>
@@ -198,8 +226,6 @@ where
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let mut arr_inner = TokenStream::new();
         arr_inner.append_separated(self.vec.iter(), Punct::new(',', Spacing::Alone));
-        tokens.append_all(quote! {
-            shared_structs::IndexableSet::from([#arr_inner])
-        });
+        tokens.append_all(quote! { vec![#arr_inner] });
     }
 }

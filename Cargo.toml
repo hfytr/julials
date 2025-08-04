@@ -4,5 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-parser_macro = { path = "./parser_macro" }
-shared_structs = { path = "./shared_structs" }
+parser = { path = "parser" }

@@ -4,7 +4,8 @@ mod sets;
 
 pub use lexer::{RegexDFA, Trie, TrieNode};
 pub use parser::{ParseAction, ParseTable};
-pub use sets::{IndexableSet, USizeSet};
+use proc_macro2::TokenStream;
+use quote::{ToTokens, quote};
 use std::fmt::Debug;
 
 const ERR_INVALID_LEXEME: &'static str = "The lexing engine hit an invalid sequence.";
@@ -22,6 +23,14 @@ const ERR_NODE_STACK_NOT_EMPTY: &'static str =
 const ERR_TERMINAL_GOTO: &'static str = "A terminal mapped to a goto action in the parse table.";
 const ERR_SYNTAX_ERR: &'static str = "Syntax error.";
 
+fn quote_option<T: ToTokens>(o: &Option<T>) -> TokenStream {
+    if let Some(t) = o {
+        quote! { Some(#t) }
+    } else {
+        quote! { None }
+    }
+}
+
 fn fmt_maybe_arr(f: &mut std::fmt::Formatter<'_>, a: &[Option<usize>; 256]) -> std::fmt::Result {
     f.write_str("[")?;
     for (i, e) in a
@@ -34,18 +43,22 @@ fn fmt_maybe_arr(f: &mut std::fmt::Formatter<'_>, a: &[Option<usize>; 256]) -> s
     f.write_str("]")
 }
 
-pub trait ASTNode {
-    const ID: usize;
+pub enum LexResponse<N> {
+    Invalid,
+    Done,
+    Lexeme((Box<N>, usize)),
 }
 
 pub struct Engine<'a, 'b, N, S> {
     parser: ParseTable,
     trie: Trie,
     dfa: RegexDFA,
-    lexeme_callbacks: Vec<Box<dyn Fn(&mut S, &str) -> N>>,
-    rule_callbacks: Vec<Box<dyn Fn(&Vec<Box<N>>) -> N>>,
+    // TODO: make callbacks not return Box. probably require break out lexeme enum
+    lexeme_callbacks: Vec<Box<dyn Fn(&mut S, &str) -> Box<N>>>,
+    rule_callbacks: Vec<Box<dyn Fn(Vec<Box<N>>) -> Box<N>>>,
     state: S,
-    s: &'a mut &'b str,
+    done: bool,
+    pub s: &'a mut &'b str,
     // for user dbg
     pub state_stack: Vec<usize>,
     pub node_stack: Vec<Box<N>>,
@@ -69,25 +82,30 @@ impl<N: Debug, S: Debug> Debug for Engine<'_, '_, N, S> {
 
 impl<'a, 'b, N, S> Engine<'a, 'b, N, S> {
     pub fn from_raw(
-        parser: ParseTable,
-        dfa: RegexDFA,
-        trie: Trie,
-        lexeme_callbacks: Vec<Box<dyn Fn(&mut S, &str) -> N>>,
-        rule_callbacks: Vec<Box<dyn Fn(&Vec<Box<N>>) -> N>>,
+        (actions, rule_lens): (Vec<Vec<(usize, usize)>>, Vec<(usize, usize)>),
+        dfa: (
+            Vec<Vec<u64>>,
+            Vec<[Option<usize>; 256]>,
+            Vec<Option<(usize, usize)>>,
+        ),
+        trie_raw: Vec<(Option<(usize, usize)>, [Option<usize>; 256])>,
+        lexeme_callbacks: Vec<Box<dyn Fn(&mut S, &str) -> Box<N>>>,
+        rule_callbacks: Vec<Box<dyn Fn(Vec<Box<N>>) -> Box<N>>>,
         state: S,
         s: &'a mut &'b str,
-    ) -> Self {
-        Self {
-            parser,
-            trie,
+    ) -> Result<Self, &'static str> {
+        Ok(Self {
+            parser: ParseTable::from_raw(actions, rule_lens)?,
+            trie: Trie::from_raw(trie_raw),
+            dfa: RegexDFA::from_raw(dfa),
             lexeme_callbacks,
             rule_callbacks,
-            dfa,
             state,
+            done: false,
             s,
             node_stack: vec![],
             state_stack: vec![0],
-        }
+        })
     }
 
     pub fn parse(&mut self) -> Result<Box<N>, &'static str> {
@@ -95,7 +113,7 @@ impl<'a, 'b, N, S> Engine<'a, 'b, N, S> {
             match self.parser.actions[*self.state_stack.last().unwrap()][lexeme_id] {
                 ParseAction::Shift(state) => {
                     self.state_stack.push(state);
-                    self.node_stack.push(Box::new(lexeme));
+                    self.node_stack.push(lexeme);
                 }
                 ParseAction::Reduce(rule) => {
                     let (rule_len, non_terminal) = self.parser.rule_lens[rule];
@@ -109,7 +127,7 @@ impl<'a, 'b, N, S> Engine<'a, 'b, N, S> {
                             .ok_or(ERR_NODE_STACK_EMPTY)?,
                     );
                     self.node_stack
-                        .push(Box::new((self.rule_callbacks[non_terminal])(&children)));
+                        .push((self.rule_callbacks[non_terminal])(children));
                     if non_terminal == 0 {
                         if !self.node_stack.is_empty() {
                             return Result::Err(ERR_NODE_STACK_NOT_EMPTY);
@@ -138,39 +156,43 @@ impl<'a, 'b, N, S> Engine<'a, 'b, N, S> {
         Result::Err(ERR_PREMATURE_FIN)
     }
 
-    pub fn lex(&mut self) -> Option<(N, usize)> {
+    pub fn lex(&mut self) -> Option<(Box<N>, usize)> {
         if self.s.is_empty() {
+            self.done = true;
             return None;
         }
-        let (trie_match, trie_len) =
-            if let Some((trie_match, trie_fin)) = self.trie.query_longest(&self.s.as_bytes()) {
-                (Some(trie_match), trie_fin)
-            } else {
-                (None, 0)
-            };
+        let (trie_match, trie_len) = if let Some((trie_lexeme, trie_node, trie_len)) =
+            self.trie.query_longest(&self.s.as_bytes())
+        {
+            (Some((trie_lexeme, trie_node)), trie_len)
+        } else {
+            (None, 0)
+        };
         let bytes = self.s.as_bytes();
         let mut regex_match = None;
         let mut cur = 0;
         let mut regex_len = 0;
-        while let Some(next) = self.dfa.trans[cur][bytes[regex_len] as usize] {
-            if let Some(fin) = self.dfa.fin[cur] {
+        while regex_len < bytes.len()
+            && let Some(next) = self.dfa.trans[cur][bytes[regex_len] as usize]
+        {
+            if let Some(fin) = self.dfa.fin[next] {
                 regex_match = Some(fin);
             }
             cur = next;
             regex_len += 1;
         }
-        let (len, lexeme_id) = if let Some(trie_fin) = trie_match
+        let (len, (lexeme_id, node_id)) = if let Some(trie_fin) = trie_match
             && let Some(regex_fin) = regex_match
         {
             Some((regex_len, regex_fin).max((trie_len, trie_fin)))
         } else {
             regex_match
-                .map(|m| (m, regex_len))
-                .or(trie_match.map(|m| (m, trie_len)))
+                .map(|m| (regex_len, m))
+                .or(trie_match.map(|m| (trie_len, m)))
         }
         .expect(ERR_INVALID_LEXEME);
         let lexeme = (self.lexeme_callbacks[lexeme_id])(&mut self.state, &self.s[0..len]);
         *self.s = &self.s[len..];
-        Some((lexeme, lexeme_id))
+        Some((lexeme, node_id))
     }
 }

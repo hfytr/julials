@@ -1,3 +1,4 @@
 /target
-/parser_macro/target
-/shared_structs/target
+/parser/target
+/parser/shared_structs/target
+/parser/proc_macro/target

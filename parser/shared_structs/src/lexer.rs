@@ -1,5 +1,8 @@
 use super::fmt_maybe_arr;
-use crate::sets::{IndexableSet, USizeSet};
+use crate::{
+    quote_option,
+    sets::{IndexableSet, USizeSet},
+};
 use proc_macro2::{Punct, Spacing, TokenStream};
 use quote::{ToTokens, TokenStreamExt, quote};
 use std::{collections::BTreeMap, fmt::Debug, rc::Rc};
@@ -7,42 +10,38 @@ use std::{collections::BTreeMap, fmt::Debug, rc::Rc};
 type NFAEdge = Option<(u8, u8)>;
 
 pub struct TrieNode {
-    pub callback: Option<usize>,
+    pub fin: Option<(usize, usize)>,
     pub children: [Option<usize>; 256],
 }
 
 impl Debug for TrieNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.callback.fmt(f)?;
+        self.fin.fmt(f)?;
         f.write_str("\n")?;
         fmt_maybe_arr(f, &self.children)
     }
 }
 
 impl TrieNode {
-    pub fn from_raw(callback: Option<usize>, children: [Option<usize>; 256]) -> Self {
-        Self { callback, children }
+    pub fn from_raw(fin: Option<(usize, usize)>, children: [Option<usize>; 256]) -> Self {
+        Self { fin, children }
     }
 }
 
 impl ToTokens for TrieNode {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let callback = if let Some(u) = self.callback {
-            quote! { Some(#u) }
+        let fin = if let Some((lexeme_id, node_id)) = self.fin {
+            quote! { Some((#lexeme_id, #node_id)) }
         } else {
             quote! { None }
         };
         let mut children_inner = TokenStream::new();
         children_inner.append_separated(
-            self.children.iter().map(|maybe_child| {
-                maybe_child
-                    .map(|child| quote! { Some(#child) })
-                    .unwrap_or(quote! { None })
-            }),
+            self.children.iter().map(quote_option),
             Punct::new(',', Spacing::Alone),
         );
         tokens.append_all(quote! {
-            shared_structs::TrieNode::from_raw(#callback, [#children_inner])
+            (#fin, [#children_inner])
         });
     }
 }
@@ -51,33 +50,44 @@ impl ToTokens for TrieNode {
 pub struct Trie(pub Vec<TrieNode>);
 
 impl Trie {
-    pub fn insert(&mut self, s: &[u8], x: usize) {
+    pub fn from_raw(trie_raw: Vec<(Option<(usize, usize)>, [Option<usize>; 256])>) -> Self {
+        Trie(
+            trie_raw
+                .into_iter()
+                .map(|(fin, children)| TrieNode::from_raw(fin, children))
+                .collect(),
+        )
+    }
+
+    pub fn insert(&mut self, s: &[u8], x: (usize, usize)) {
         let mut cur = 0;
         for c in s {
             cur = self.0[cur].children[*c as usize].unwrap_or_else(|| {
                 self.0[cur].children[*c as usize] = Some(self.0.len());
                 self.0.push(TrieNode {
-                    callback: None,
+                    fin: None,
                     children: [None; 256],
                 });
                 self.0.len() - 1
             });
         }
-        self.0[cur].callback = Some(x)
+        self.0[cur].fin = Some(x)
     }
 
-    pub fn query_longest(&self, s: &[u8]) -> Option<(usize, usize)> {
+    pub fn query_longest(&self, s: &[u8]) -> Option<(usize, usize, usize)> {
         let mut maybe_trie_match = None;
         let mut cur = 0;
         let mut i = 0;
-        while let Some(next) = self.0[cur].children[s[i] as usize] {
-            if let Some(fin) = self.0[cur].callback {
+        while i < s.len()
+            && let Some(next) = self.0[cur].children[s[i] as usize]
+        {
+            if let Some(fin) = self.0[next].fin {
                 maybe_trie_match = Some(fin);
             }
             cur = next;
             i += 1;
         }
-        maybe_trie_match.map(|trie_match| (trie_match, i))
+        maybe_trie_match.map(|(lexeme_id, node_id)| (lexeme_id, node_id, i))
     }
 }
 
@@ -92,7 +102,7 @@ impl ToTokens for Trie {
         let mut result = TokenStream::new();
         result.append_separated(self.0.iter(), Punct::new(',', Spacing::Alone));
         tokens.append_all(quote! {
-            shared_structs::Trie::from([#result])
+            vec![#result]
         });
     }
 }
@@ -110,29 +120,47 @@ const ESCAPE_ARRAY: [(u8, u8); 9] = [
 ];
 
 pub struct RegexDFA {
-    states: IndexableSet<USizeSet>,
+    pub states: IndexableSet<USizeSet>,
     pub trans: Vec<[Option<usize>; 256]>,
-    pub fin: Vec<Option<usize>>,
+    pub fin: Vec<Option<(usize, usize)>>,
 }
 
 impl Debug for RegexDFA {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RegexDFA(")?;
+        f.write_str("RegexDFA {\n    states: ")?;
         self.states.fmt(f)?;
+        f.write_str("\n    fin: ")?;
         self.fin.fmt(f)?;
+        f.write_str("\n    tran: ")?;
         for tran in self.trans.iter() {
             fmt_maybe_arr(f, tran)?;
-            f.write_str(", ")?;
+            f.write_str("\n    , ")?;
         }
-        f.write_str(")")
+        f.write_str("}")
     }
 }
 
 impl RegexDFA {
-    pub fn from_regexi(regexi: Vec<(String, usize)>) -> Self {
+    pub fn from_raw(
+        (states_raw, trans, fin): (
+            Vec<Vec<u64>>,
+            Vec<[Option<usize>; 256]>,
+            Vec<Option<(usize, usize)>>,
+        ),
+    ) -> Self {
+        let states_vec: Vec<_> = states_raw
+            .into_iter()
+            .map(|state| USizeSet(state))
+            .collect();
+        let states = IndexableSet::from(states_vec);
+        Self { states, trans, fin }
+    }
+
+    pub fn from_regexi(regexi: Vec<(&str, usize, usize)>) -> Self {
         let nfa = NFA::from_regexi(regexi);
+        let init_state = nfa.epsilon_closure(0);
         let mut res = Self {
-            states: IndexableSet::from([nfa.epsilon_closure(0)]),
+            states: IndexableSet::from([init_state]),
             trans: vec![],
             fin: vec![None],
         };
@@ -185,46 +213,40 @@ impl RegexDFA {
         }
         res
     }
+}
 
-    pub fn minimize(&mut self) {
-        // TODO
-    }
-
-    pub fn from_raw(
-        states: IndexableSet<USizeSet>,
-        trans: Vec<[Option<usize>; 256]>,
-        fin: Vec<Option<usize>>,
-    ) -> Self {
-        Self { states, trans, fin }
-    }
+fn quote_option_vec<T, F: FnMut(&Option<T>) -> TokenStream>(
+    callback: F,
+    v: &[Option<T>],
+) -> TokenStream {
+    let mut res = TokenStream::new();
+    res.append_separated(v.iter().map(callback), Punct::new(',', Spacing::Alone));
+    res
 }
 
 impl ToTokens for RegexDFA {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let states = &self.states;
         let mut trans_inner = TokenStream::new();
-        let quote_option_vec = |v: &[Option<usize>]| {
-            let mut res = TokenStream::new();
-            res.append_separated(
-                v.iter().map(|maybe_vi| {
-                    maybe_vi
-                        .map(|vi| quote! { Some(#vi) })
-                        .unwrap_or(quote! { None })
-                }),
-                Punct::new(',', Spacing::Alone),
-            );
-            res
-        };
         trans_inner.append_separated(
             self.trans.iter().map(|tran| {
-                let inner = quote_option_vec(tran);
-                quote! { [#inner] }
+                let tran_raw = quote_option_vec(quote_option, tran);
+                quote! { [#tran_raw] }
             }),
             Punct::new(',', Spacing::Alone),
         );
-        let fin_inner = quote_option_vec(&self.fin);
+        let fin_inner = quote_option_vec(
+            |fin| {
+                if let Some((lexeme_id, node_id)) = fin {
+                    quote! { Some((#lexeme_id, #node_id)) }
+                } else {
+                    quote! { None }
+                }
+            },
+            &self.fin,
+        );
+        let states = &self.states;
         tokens.append_all(quote! {
-            shared_structs::RegexDFA::from_raw(#states, vec![#trans_inner], vec![#fin_inner])
+            (#states, vec![#trans_inner], vec![#fin_inner])
         });
     }
 }
@@ -232,7 +254,7 @@ impl ToTokens for RegexDFA {
 #[derive(Debug)]
 struct NFA {
     edges: Vec<Vec<(NFAEdge, usize)>>,
-    fin: Vec<Option<usize>>,
+    fin: Vec<Option<(usize, usize)>>,
 }
 
 impl NFA {
@@ -261,21 +283,21 @@ impl NFA {
         res
     }
 
-    pub fn from_regexi(regexi: Vec<(String, usize)>) -> Self {
-        regexi
-            .iter()
-            .fold(Self::from_regex("").0, |mut acc, regex| {
-                let (mut new_nfa, new_fin) = Self::from_regex(&regex.0);
-                let len = acc.edges.len();
-                acc.fin.resize(len + new_nfa.edges.len(), None);
-                acc.fin[new_fin + len] = Some(regex.1);
-                acc.edges[0].push((None, len));
-                acc.edges.append(&mut new_nfa.edges);
-                acc
-            })
+    pub fn from_regexi(regexi: Vec<(&str, usize, usize)>) -> Self {
+        let mut init = Self::from_regex("", 0).0;
+        init.fin = vec![None];
+        regexi.iter().fold(init, |mut acc, regex| {
+            let (mut new_nfa, new_fin) = Self::from_regex(&regex.0, acc.fin.len());
+            let len = acc.edges.len();
+            acc.fin.resize(len + new_nfa.edges.len(), None);
+            acc.fin[new_fin] = Some((regex.1, regex.2));
+            acc.edges[0].push((None, len));
+            acc.edges.append(&mut new_nfa.edges);
+            acc
+        })
     }
 
-    fn from_regex(regex: &str) -> (Self, usize) {
+    fn from_regex(regex: &str, node_offset: usize) -> (Self, usize) {
         let mut escape_lookup = [None; 256];
         for (key, val) in ESCAPE_ARRAY {
             escape_lookup[key as usize] = Some(val);
@@ -285,11 +307,8 @@ impl NFA {
         let mut sq = None;
         let mut sq_chars: [u64; 4] = [0; 4];
         let mut sq_not = false;
-        let mut last = (0, 0);
-        let mut res = Self {
-            edges: vec![vec![]],
-            fin: vec![],
-        };
+        let mut last = (node_offset, node_offset);
+        let mut edges = vec![vec![]];
         let mut in_group = 0;
 
         let mut s = regex.as_bytes();
@@ -303,14 +322,14 @@ impl NFA {
                 (Some(_), [b'*', ..]) if !escaped => panic!("ERROR: Used * in []."),
                 (None, [b'*', ..]) if in_group != 0 && !escaped => panic!("ERROR: Used * in ()."),
                 (_, [b'*', tail @ ..]) if !escaped => {
-                    res.edges[last.1].push((None, last.0));
+                    edges[last.1 - node_offset].push((None, last.0));
                     s = tail;
                 }
                 (Some(_), [b'.', ..]) if !escaped => panic!("ERROR: . in []"),
                 (None, [b'.', tail @ ..]) if !escaped => {
-                    let new_node = res.edges.len();
-                    res.edges[last.1].push((Some((u8::MIN, u8::MAX)), new_node));
-                    res.edges.push(vec![]);
+                    let new_node = edges.len() + node_offset;
+                    edges[last.1 - node_offset].push((Some((u8::MIN, u8::MAX)), new_node));
+                    edges.push(vec![]);
                     last = (last.1, new_node);
                     s = tail;
                 }
@@ -335,37 +354,37 @@ impl NFA {
                 }
                 (Some(_), [b'(', ..]) => panic!("ERROR; () in []."),
                 (_, [b'(', tail @ ..]) if !escaped => {
-                    groups.push((last.1, res.edges.len()));
+                    groups.push((last.1, edges.len() + node_offset));
                     in_group += 1;
-                    res.edges.push(vec![]);
-                    let new_node = res.edges.len();
-                    res.edges[last.1].push((None, new_node));
+                    edges.push(vec![]);
+                    let new_node = edges.len() + node_offset;
+                    edges[last.1 - node_offset].push((None, new_node));
                     last = (last.1, new_node);
-                    res.edges.push(vec![]);
+                    edges.push(vec![]);
                     s = tail;
                 }
                 (_, [b')', ..]) if !escaped && in_group == 0 => panic!("ERROR: Trailing )."),
                 (_, [b')', tail @ ..]) if !escaped && groups.len() != 0 => {
-                    res.edges[last.1].push((None, groups.last().unwrap().1));
+                    edges[last.1 - node_offset].push((None, groups.last().unwrap().1));
                     last = groups.pop().unwrap();
                     in_group -= 1;
                     s = tail;
                 }
                 (_, [b'|', ..]) if !escaped && in_group == 0 => panic!("ERROR: | not in ()."),
                 (_, [b'|', tail @ ..]) if !escaped && in_group != 0 => {
-                    res.edges[last.1].push((None, groups.last().unwrap().1));
+                    edges[last.1 - node_offset].push((None, groups.last().unwrap().1));
                     last = (0, groups.last().unwrap().0);
-                    let new_node = res.edges.len();
-                    res.edges[last.1].push((None, new_node));
+                    let new_node = edges.len() + node_offset;
+                    edges[last.1 - node_offset].push((None, new_node));
                     last = (last.1, new_node);
-                    res.edges.push(vec![]);
+                    edges.push(vec![]);
                     s = tail;
                 }
                 (_, [b'[', tail @ ..]) if !escaped => {
-                    sq = Some((last.1, res.edges.len()));
-                    last = (last.1, res.edges.len());
+                    sq = Some((last.1, edges.len() + node_offset));
+                    last = (last.1, edges.len() + node_offset);
                     sq_chars = [0; 4];
-                    res.edges.push(vec![]);
+                    edges.push(vec![]);
                     s = tail;
                 }
                 (None, [b']', ..]) if !escaped => panic!("ERROR: Trailing ]"),
@@ -373,13 +392,12 @@ impl NFA {
                     let mut start = 0;
                     let mut end = 0;
                     let mut in_feasible = false;
-                    sq_chars = [!sq_chars[0], !sq_chars[1], !sq_chars[2], !sq_chars[3]];
                     let get_u8_set = |i: u8| sq_chars[i as usize / 64] & (1 << (i % 64)) > 0;
                     for i in 0..=255 {
                         if get_u8_set(i) && in_feasible {
                             end += 1;
                         } else if in_feasible {
-                            res.edges[sq_start].push((Some((start, end)), sq_end));
+                            edges[sq_start - node_offset].push((Some((start, end)), sq_end));
                             in_feasible = false;
                         } else if get_u8_set(i) {
                             in_feasible = true;
@@ -388,7 +406,7 @@ impl NFA {
                         }
                     }
                     if in_feasible {
-                        res.edges[sq_start].push((Some((start, end)), sq_end));
+                        edges[sq_start - node_offset].push((Some((start, end)), sq_end));
                     }
                     sq = None;
                     s = tail;
@@ -409,16 +427,16 @@ impl NFA {
                         c = escape_lookup[c as usize].unwrap_or(c);
                         escaped = false;
                     }
-                    let new_node = res.edges.len();
-                    res.edges[last.1].push((Some((c, c)), new_node));
-                    last = (res.edges.len(), res.edges.len());
-                    res.edges.push(vec![]);
+                    let new_node = edges.len() + node_offset;
+                    edges[last.1 - node_offset].push((Some((c, c)), new_node));
+                    last = (new_node, new_node);
+                    edges.push(vec![]);
                     s = tail;
                 }
                 _ => {}
             }
         }
-
-        (res, last.1)
+        let fin = vec![];
+        (Self { edges, fin }, last.1)
     }
 }

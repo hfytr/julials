@@ -3,21 +3,6 @@
 version = 4
 
 [[package]]
-name = "julials"
-version = "0.1.0"
-dependencies = [
- "parser",
-]
-
-[[package]]
-name = "parser"
-version = "0.1.0"
-dependencies = [
- "proc_macro",
- "shared_structs",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
