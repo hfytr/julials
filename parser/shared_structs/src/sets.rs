@@ -6,7 +6,7 @@ use std::{
 };
 
 use proc_macro2::{Punct, Spacing, TokenStream};
-use quote::{ToTokens, TokenStreamExt, quote};
+use quote::{quote, ToTokens, TokenStreamExt};
 
 #[derive(Default, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct USizeSet(pub Vec<u64>);

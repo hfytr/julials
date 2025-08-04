@@ -58,13 +58,8 @@ impl Display for Node {
 }
 
 fn expr_node(children: Vec<Box<Node>>) -> Box<Node> {
-    if let Result::Ok(
-        [
-            term @ box Node::Term(_),
-            box Node::Plus,
-            mut expr @ box Node::Expr(_),
-        ],
-    ) = <[_; 3]>::try_from(children)
+    if let Result::Ok([term @ box Node::Term(_), box Node::Plus, mut expr @ box Node::Expr(_)]) =
+        <[_; 3]>::try_from(children)
     {
         if let box Node::Term(ref mut components) = expr {
             components.push(term);

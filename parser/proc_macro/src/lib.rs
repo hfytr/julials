@@ -1,13 +1,13 @@
 mod lexer;
 
-use crate::lexer::{Production, ProductionType, process_productions};
+use crate::lexer::{process_productions, Production, ProductionType};
 use proc_macro2::{Ident, Punct, Spacing, TokenStream};
-use quote::{TokenStreamExt, quote};
+use quote::{quote, TokenStreamExt};
 use shared_structs::{ParseTable, RegexDFA, Trie};
 use std::process::exit;
 use syn::{
+    parse::{discouraged::Speculative, Parse},
     Error, PathSegment, Token,
-    parse::{Parse, discouraged::Speculative},
 };
 
 const ERR_STATE_NOT_SPECIFIED: &'static str =

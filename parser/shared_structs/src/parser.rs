@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fmt::Debug};
 
 use proc_macro2::{Punct, Spacing, TokenStream};
-use quote::{ToTokens, TokenStreamExt, quote};
+use quote::{quote, ToTokens, TokenStreamExt};
 
 use crate::sets::USizeSet;
 
@@ -56,7 +56,8 @@ impl ParseTable {
         let dfa = ParseDFA::from_rules(rules, start);
         let mut actions = vec![vec![ParseAction::Invalid; dfa.rules.len()]; dfa.states.len()];
         let state_ids: BTreeMap<(&SeedRule, &USizeSet), usize> = dfa
-            .states.iter()
+            .states
+            .iter()
             .enumerate()
             .map(|(i, ((seed, lookahead), _))| ((seed, lookahead), i))
             .collect();
@@ -250,7 +251,9 @@ impl ParseDFA {
 
         let mut states: BTreeMap<(SeedRule, USizeSet), Trans> = BTreeMap::new();
         let mut stack = vec![((0, 0, 0), firsts.last().unwrap().clone())];
-        let derived_rules = (0..rules.len()).map(|i| get_derived_rules(&rules, i)).collect::<Vec<_>>();
+        let derived_rules = (0..rules.len())
+            .map(|i| get_derived_rules(&rules, i))
+            .collect::<Vec<_>>();
         while let Some((seed, seed_lookahead)) = stack.pop() {
             if seed.2 == rules[seed.0][seed.1].len() {
                 states.insert((seed, seed_lookahead), vec![]);

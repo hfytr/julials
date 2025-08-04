@@ -4,7 +4,7 @@ use crate::{
     sets::{IndexableSet, USizeSet},
 };
 use proc_macro2::{Punct, Spacing, TokenStream};
-use quote::{ToTokens, TokenStreamExt, quote};
+use quote::{quote, ToTokens, TokenStreamExt};
 use std::{collections::BTreeMap, fmt::Debug, rc::Rc};
 
 type NFAEdge = Option<(u8, u8)>;

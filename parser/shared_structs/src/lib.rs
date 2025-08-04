@@ -5,7 +5,7 @@ mod sets;
 pub use lexer::{RegexDFA, Trie, TrieNode};
 pub use parser::{ParseAction, ParseTable};
 use proc_macro2::TokenStream;
-use quote::{ToTokens, quote};
+use quote::{quote, ToTokens};
 use std::fmt::Debug;
 
 const ERR_INVALID_LEXEME: &'static str = "The lexing engine hit an invalid sequence.";
