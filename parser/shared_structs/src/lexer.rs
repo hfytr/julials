@@ -1,7 +1,7 @@
 use super::fmt_maybe_arr;
 use crate::{
     quote_option,
-    sets::{IndexableSet, USizeSet},
+    sets::{IndexableMap, USizeSet},
 };
 use proc_macro2::{Punct, Spacing, TokenStream};
 use quote::{quote, ToTokens, TokenStreamExt};
@@ -119,8 +119,17 @@ const ESCAPE_ARRAY: [(u8, u8); 9] = [
     (b'-', b'-'),
 ];
 
+#[derive(Debug)]
+struct Empty();
+
+impl ToTokens for Empty {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.append_all(quote! { () });
+    }
+}
+
 pub struct RegexDFA {
-    pub states: IndexableSet<USizeSet>,
+    pub states: IndexableMap<USizeSet, Empty>,
     pub trans: Vec<[Option<usize>; 256]>,
     pub fin: Vec<Option<(usize, usize)>>,
 }
@@ -143,16 +152,16 @@ impl Debug for RegexDFA {
 impl RegexDFA {
     pub fn from_raw(
         (states_raw, trans, fin): (
-            Vec<Vec<u64>>,
+            Vec<(Vec<u64>, ())>,
             Vec<[Option<usize>; 256]>,
             Vec<Option<(usize, usize)>>,
         ),
     ) -> Self {
         let states_vec: Vec<_> = states_raw
             .into_iter()
-            .map(|state| USizeSet(state))
+            .map(|(state, _)| (USizeSet(state), Empty()))
             .collect();
-        let states = IndexableSet::from(states_vec);
+        let states = IndexableMap::from(states_vec);
         Self { states, trans, fin }
     }
 
@@ -160,13 +169,13 @@ impl RegexDFA {
         let nfa = NFA::from_regexi(regexi);
         let init_state = nfa.epsilon_closure(0);
         let mut res = Self {
-            states: IndexableSet::from([init_state]),
+            states: IndexableMap::from([(init_state, Empty())]),
             trans: vec![],
             fin: vec![None],
         };
         let mut stack = vec![0];
         while let Some(cur_ind) = stack.pop() {
-            let cur_state = Rc::clone(&res.states[cur_ind]);
+            let cur_state = Rc::clone(&res.states[cur_ind].0);
             let mut char_state = [None; 256];
             for (edge, dest) in cur_state
                 .iter()
@@ -175,28 +184,28 @@ impl RegexDFA {
             {
                 let mut new_state_map: BTreeMap<usize, usize> = BTreeMap::new();
                 let new_state = nfa.epsilon_closure(*dest);
-                let base_state_ind = res.states.get(&new_state).unwrap_or_else(|| {
+                let base_state_ind = res.states.get_ind(&new_state).unwrap_or_else(|| {
                     stack.push(res.states.len());
                     res.fin.push(
                         new_state
                             .iter()
                             .fold(None, |acc, nfa_state| acc.or(nfa.fin[nfa_state])),
                     );
-                    res.states.push(new_state).0
+                    res.states.push(new_state, Empty()).0
                 });
                 for i in (edge.0..=edge.1).map(usize::from) {
                     if let Some(old_state) = char_state[i] {
                         char_state[i] = new_state_map.get(&old_state).map(|x| *x).or_else(|| {
-                            let new_state = res.states[old_state].as_ref()
-                                | res.states[base_state_ind].as_ref();
-                            let new_ind = res.states.get(&new_state).unwrap_or_else(|| {
+                            let new_state = res.states[old_state].0.as_ref()
+                                | res.states[base_state_ind].0.as_ref();
+                            let new_ind = res.states.get_ind(&new_state).unwrap_or_else(|| {
                                 stack.push(res.states.len());
                                 res.fin.push(
                                     new_state
                                         .iter()
                                         .fold(None, |acc, nfa_state| nfa.fin[nfa_state].or(acc)),
                                 );
-                                res.states.push(new_state).0
+                                res.states.push(new_state, Empty()).0
                             });
                             new_state_map.insert(old_state, new_ind);
                             Some(new_ind)

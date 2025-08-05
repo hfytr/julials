@@ -78,7 +78,7 @@ impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
     pub fn from_raw(
         (actions, rule_lens): (Vec<Vec<(usize, usize)>>, Vec<(usize, usize)>),
         dfa: (
-            Vec<Vec<u64>>,
+            Vec<(Vec<u64>, ())>,
             Vec<[Option<usize>; 256]>,
             Vec<Option<(usize, usize)>>,
         ),

@@ -58,7 +58,7 @@ pub enum Conflict {
 
 impl ParseTable {
     pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, start: usize) -> Result<Self, Vec<Conflict>> {
-        let dfa = ParseDFA::from_rules(rules, start);
+        let (dfa, mut conflicts) = ParseDFA::from_rules(rules, start);
         dbg!(&dfa);
         let mut last = (usize::MAX, usize::MAX, usize::MAX);
         let state_ids: BTreeMap<&SeedRule, usize> = dfa
@@ -83,7 +83,6 @@ impl ParseTable {
                 i += 1;
             }
         }
-        let mut conflicts = vec![];
         for ((seed, lookahead), trans) in dfa.states.iter() {
             let id = *state_ids.get(&seed).unwrap();
             for (item, next, _) in trans {
@@ -106,8 +105,7 @@ impl ParseTable {
                 }
             }
         }
-        if conflicts.is_empty() {
-        Ok(Self { actions, rule_lens })} else {Err(conflicts)}
+        conflicts.is_empty().then_some(Self { actions, rule_lens }).ok_or(conflicts)
     }
 
     pub fn from_raw(
@@ -264,15 +262,16 @@ fn get_derived_lookaheads(
 }
 
 impl ParseDFA {
-    fn from_rules(mut rules: Vec<Vec<Vec<usize>>>, start: usize) -> Self {
+    fn from_rules(mut rules: Vec<Vec<Vec<usize>>>, start: usize) -> (Self, Vec<Conflict>) {
         rules[0] = vec![vec![start]];
         let firsts = get_firsts(&rules);
-
         let mut states: BTreeMap<(SeedRule, USizeSet), Trans> = BTreeMap::new();
         let mut stack = vec![((0, 0, 0), firsts.last().unwrap().clone())];
+        let mut conflicts = vec![];
         let derived_rules = (0..rules.len())
             .map(|i| get_derived_rules(&rules, i))
             .collect::<Vec<_>>();
+
         while let Some((seed, seed_lookahead)) = stack.pop() {
             if seed.2 == rules[seed.0][seed.1].len() {
                 states.insert((seed, seed_lookahead), vec![]);
@@ -301,6 +300,6 @@ impl ParseDFA {
             states.insert((seed, seed_lookahead), cur_trans);
         }
 
-        Self { rules, states }
+        (Self { rules, states }, conflicts)
     }
 }

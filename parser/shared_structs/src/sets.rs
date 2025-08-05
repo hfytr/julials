@@ -134,98 +134,100 @@ impl<'a> Iterator for USizeSetIterator<'a> {
     }
 }
 
-pub struct IndexableSet<T>
+pub struct IndexableMap<T, U>
 where
     T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
 {
     set: BTreeMap<Rc<T>, usize>,
-    vec: Vec<Rc<T>>,
+    vec: Vec<(Rc<T>, U)>,
 }
 
-impl<T> Debug for IndexableSet<T>
+impl<T, U> Debug for IndexableMap<T, U>
 where
     T: Debug + Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
+    U: Debug
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.vec)
     }
 }
 
-impl<T> IndexableSet<T>
+impl<T, U> IndexableMap<T, U>
 where
     T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
 {
     pub fn len(&self) -> usize {
         self.vec.len()
     }
-    pub fn last(&self) -> Option<Rc<T>> {
-        self.vec.last().map(Rc::clone)
+    pub fn last(&self) -> Option<(Rc<T>, &U)> {
+        self.vec.last().map(|(t, u)| (Rc::clone(t), u))
     }
-    pub fn get(&self, x: &T) -> Option<usize> {
+    pub fn get_ind(&self, x: &T) -> Option<usize> {
         self.set.get(x).map(|x| *x)
     }
     /// @return (inserted elements index, true if the element is new)
-    pub fn push(&mut self, t: T) -> (usize, bool) {
+    pub fn push(&mut self, t: T, u: U) -> (usize, bool) {
         if let Some(ind) = self.set.get(&t) {
             (*ind, false)
         } else {
             let rc = Rc::new(t);
             self.set.insert(Rc::clone(&rc), self.len());
-            self.vec.push(rc);
+            self.vec.push((rc, u));
             (self.vec.len() - 1, true)
         }
     }
-    pub fn to_vec(self) -> Vec<T> {
-        let IndexableSet { vec, .. } = self;
+    pub fn to_vec(self) -> Vec<(T, U)> {
+        let IndexableMap { vec, .. } = self;
         vec.into_iter()
-            .map(|rc| Rc::try_unwrap(rc).ok().unwrap())
+            .map(|(t, u)| (Rc::try_unwrap(t).ok().unwrap(), u))
             .collect()
     }
 }
 
-impl<T> Index<usize> for IndexableSet<T>
+impl<T, U> Index<usize> for IndexableMap<T, U>
 where
     T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
 {
     fn index(&self, index: usize) -> &Self::Output {
         &self.vec[index]
     }
-    type Output = Rc<T>;
+    type Output = (Rc<T>, U);
 }
 
-impl<T> From<Vec<T>> for IndexableSet<T>
+impl<T, U> From<Vec<(T, U)>> for IndexableMap<T, U>
 where
     T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
 {
-    fn from(items: Vec<T>) -> Self {
-        let vec: Vec<_> = items.into_iter().map(Rc::new).collect();
+    fn from(items: Vec<(T, U)>) -> Self {
+        let vec: Vec<_> = items.into_iter().map(|(t, u)| (Rc::new(t), u)).collect();
         Self {
-            set: BTreeMap::from_iter(vec.iter().enumerate().map(|(i, rc)| (Rc::clone(rc), i))),
+            set: BTreeMap::from_iter(vec.iter().enumerate().map(|(i, (t, _))| (Rc::clone(t), i))),
             vec,
         }
     }
 }
 
-impl<T, const N: usize> From<[T; N]> for IndexableSet<T>
+impl<T, U, const N: usize> From<[(T, U); N]> for IndexableMap<T, U>
 where
     T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
 {
-    fn from(items: [T; N]) -> Self {
-        let items: Vec<_> = items.into_iter().map(Rc::new).collect();
+    fn from(items: [(T, U); N]) -> Self {
+        let vec: Vec<_> = items.into_iter().map(|(t, u)| (Rc::new(t), u)).collect();
         Self {
-            set: BTreeMap::from_iter(items.iter().enumerate().map(|(i, rc)| (Rc::clone(rc), i))),
-            vec: items,
+            set: BTreeMap::from_iter(vec.iter().enumerate().map(|(i, (t, _))| (Rc::clone(t), i))),
+            vec,
         }
     }
 }
 
-impl<T> ToTokens for IndexableSet<T>
+impl<T, U> ToTokens for IndexableMap<T, U>
 where
     T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
+    U: ToTokens,
 {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let mut arr_inner = TokenStream::new();
-        arr_inner.append_separated(self.vec.iter(), Punct::new(',', Spacing::Alone));
+        arr_inner.append_separated(self.vec.iter().map(|(t, u)| quote! { (#t, #u) }), Punct::new(',', Spacing::Alone));
         tokens.append_all(quote! { vec![#arr_inner] });
     }
 }
