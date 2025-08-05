@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fmt::Debug};
 use proc_macro2::{Punct, Spacing, TokenStream};
 use quote::{quote, ToTokens, TokenStreamExt};
 
-use crate::sets::USizeSet;
+use crate::sets::{IndexableMap, USizeSet};
 
 const ERR_INVALID_PA_ID: &'static str = "Parse actions must have kind 0 / 1 / 2 / 3";
 
@@ -58,19 +58,22 @@ pub enum Conflict {
 
 impl ParseTable {
     pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, start: usize) -> Result<Self, Vec<Conflict>> {
-        let (dfa, mut conflicts) = ParseDFA::from_rules(rules, start);
-        dbg!(&dfa);
-        let mut last = (usize::MAX, usize::MAX, usize::MAX);
-        let state_ids: BTreeMap<&SeedRule, usize> = dfa
-            .states
-            .iter()
-            .filter(|((seed, _), _)| {
-                let result = last != *seed;
-                last = *seed;
-                result
-            }).enumerate()
-            .map(|(i, ((seed, _), _))| (seed, i))
-            .collect();
+        let dfa = ParseDFA::from_rules(rules, start);
+        dbg!(&dfa.rules);
+        dbg!(&dfa.states);
+        let mut conflicts = vec![];
+        let mut state_ids = vec![usize::MAX; dfa.states.len()];
+        let mut cur_id = usize::MAX;
+        let mut last = &vec![];
+        for (state, _, i) in dfa.states.iter_set() {
+            let seed: &Vec<SeedRule> = &state.0;
+            if last != seed {
+                last = seed;
+                cur_id = cur_id.wrapping_add(1);
+            }
+            state_ids[i] = cur_id
+        }
+        dbg!(&state_ids);
         let mut actions = vec![vec![ParseAction::Invalid; dfa.rules.len()]; state_ids.len()];
         let mut production_ids = vec![];
         let mut rule_lens = vec![];
@@ -83,29 +86,39 @@ impl ParseTable {
                 i += 1;
             }
         }
-        for ((seed, lookahead), trans) in dfa.states.iter() {
-            let id = *state_ids.get(&seed).unwrap();
-            for (item, next, _) in trans {
-                if matches!(actions[id][*item], ParseAction::Reduce(_)) {
-                    conflicts.push(Conflict::SR(seed.0, seed.1));
-                }
-                actions[id][*item] = if dfa.rules[*item].len() == 0 {
-                    ParseAction::Shift(*state_ids.get(&next).unwrap())
-                } else {
-                    ParseAction::Goto(*state_ids.get(&next).unwrap())
-                };
-            }
-            if seed.2 == dfa.rules[seed.0][seed.1].len() {
-                for item in lookahead.iter() {
+        for (i, (state, trans)) in dfa.states.iter().enumerate() {
+            let (seeds, lookaheads) = &**state;
+            let id = state_ids[i];
+            for (seed, lookahead) in seeds.into_iter().zip(lookaheads.into_iter()) {
+                for (item, next) in trans
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, tran)| tran.map(move |tran| (i, tran)))
+                {
                     if matches!(actions[id][item], ParseAction::Reduce(_)) {
-                        conflicts.push(Conflict::RR(seed.0, seed.1));
+                        conflicts.push(Conflict::SR(seed.0, seed.1));
                     }
-                    let production = production_ids[seed.0][seed.1];
-                    actions[id][item] = ParseAction::Reduce(production);
+                    actions[id][item] = if dfa.rules[item].len() == 0 {
+                        ParseAction::Shift(*state_ids.get(next).unwrap())
+                    } else {
+                        ParseAction::Goto(*state_ids.get(next).unwrap())
+                    };
+                }
+                if seed.2 == dfa.rules[seed.0][seed.1].len() {
+                    for item in lookahead.iter() {
+                        if matches!(actions[id][item], ParseAction::Reduce(_)) {
+                            conflicts.push(Conflict::RR(seed.0, seed.1));
+                        }
+                        let production = production_ids[seed.0][seed.1];
+                        actions[id][item] = ParseAction::Reduce(production);
+                    }
                 }
             }
         }
-        conflicts.is_empty().then_some(Self { actions, rule_lens }).ok_or(conflicts)
+        conflicts
+            .is_empty()
+            .then_some(Self { actions, rule_lens })
+            .ok_or(conflicts)
     }
 
     pub fn from_raw(
@@ -153,11 +166,9 @@ impl ToTokens for ParseTable {
     }
 }
 
-type Trans = Vec<(usize, SeedRule, USizeSet)>;
-
 #[derive(Debug)]
 struct ParseDFA {
-    states: BTreeMap<(SeedRule, USizeSet), Vec<(usize, SeedRule, USizeSet)>>,
+    states: IndexableMap<(Vec<SeedRule>, Vec<USizeSet>), Vec<Option<usize>>>,
     rules: Vec<Vec<Vec<usize>>>,
 }
 
@@ -262,44 +273,74 @@ fn get_derived_lookaheads(
 }
 
 impl ParseDFA {
-    fn from_rules(mut rules: Vec<Vec<Vec<usize>>>, start: usize) -> (Self, Vec<Conflict>) {
+    fn from_rules(mut rules: Vec<Vec<Vec<usize>>>, start: usize) -> Self {
         rules[0] = vec![vec![start]];
         let firsts = get_firsts(&rules);
-        let mut states: BTreeMap<(SeedRule, USizeSet), Trans> = BTreeMap::new();
-        let mut stack = vec![((0, 0, 0), firsts.last().unwrap().clone())];
-        let mut conflicts = vec![];
+        let mut states = IndexableMap::from([(
+            (vec![(0, 0, 0)], vec![firsts.last().unwrap().clone()]),
+            vec![],
+        )]);
+        let mut stack = vec![0];
         let derived_rules = (0..rules.len())
             .map(|i| get_derived_rules(&rules, i))
             .collect::<Vec<_>>();
 
-        while let Some((seed, seed_lookahead)) = stack.pop() {
-            if seed.2 == rules[seed.0][seed.1].len() {
-                states.insert((seed, seed_lookahead), vec![]);
-                continue;
-            } else if states.get(&(seed, seed_lookahead.clone())).is_some() {
+        while let Some(cur_state) = stack.pop() {
+            let iter_state = || {
+                states[cur_state].0.0
+                    .iter()
+                    .zip(states[cur_state].0.1.iter())
+                    .filter(|(seed, _)| seed.2 < rules[seed.0][seed.1].len())
+            };
+            if iter_state().next().is_none() {
                 continue;
             }
-            let mut cur_trans = vec![];
-            let next_seed = (seed.0, seed.1, seed.2 + 1);
-            cur_trans.push((
-                rules[seed.0][seed.1][seed.2],
-                next_seed,
-                seed_lookahead.clone(),
-            ));
-            stack.push((next_seed, seed_lookahead.clone()));
-            let derived_lookaheads = get_derived_lookaheads(seed, &seed_lookahead, &firsts, &rules);
-            for rule in derived_rules[rules[seed.0][seed.1][seed.2]].iter() {
+            let mut trans = vec![(vec![], vec![]); rules.len()];
+            for (seed, lookahead) in iter_state() {
+                let new_seed = (seed.0, seed.1, seed.2 + 1);
+                let edge = rules[seed.0][seed.1][seed.2];
+                // seeds dont overlap so neither do new seeds
+                trans[edge].0.push(new_seed);
+                trans[edge].1.push(lookahead.clone());
+            }
+            let derived_lookaheads = iter_state()
+                .map(|(seed, lookahead)| get_derived_lookaheads(*seed, &lookahead, &firsts, &rules))
+                .collect::<Vec<_>>();
+            for (i, rule) in iter_state().enumerate().flat_map(|(i, (seed, _))| {
+                derived_rules[rules[seed.0][seed.1][seed.2]]
+                    .iter()
+                    .map(move |rule| (i, rule))
+            }) {
                 let new_seed = (rule.0, rule.1, 1);
-                cur_trans.push((
-                    rules[rule.0][rule.1][0],
-                    new_seed,
-                    derived_lookaheads[rule.0].clone().unwrap(),
-                ));
-                stack.push((new_seed, derived_lookaheads[rule.0].clone().unwrap()))
+                let edge = rules[rule.0][rule.1][0];
+                if let Some((tran, _)) = trans[edge]
+                    .0
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, seed)| **seed == new_seed)
+                    .next()
+                {
+                    trans[edge].1[tran] |= derived_lookaheads[i][rule.0].as_ref().unwrap();
+                } else {
+                    trans[edge].0.push(new_seed);
+                    trans[edge].1.push(derived_lookaheads[i][rule.0].clone().unwrap());
+                }
             }
-            states.insert((seed, seed_lookahead), cur_trans);
+            let true_tran = trans
+                .into_iter()
+                .map(|tran| {
+                    (!tran.0.is_empty()).then(|| {
+                        states.get_ind(&tran).unwrap_or_else(|| {
+                            let state = states.push(tran, vec![]).0;
+                            stack.push(state);
+                            state
+                        })
+                    })
+                })
+                .collect();
+            states[cur_state].1 = true_tran;
         }
 
-        (Self { rules, states }, conflicts)
+        Self { rules, states }
     }
 }

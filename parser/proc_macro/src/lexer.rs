@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fmt::Debug};
 
 use quote::ToTokens;
-use shared_structs::{ParseTable, RegexDFA, Trie, TrieNode, Conflict};
+use shared_structs::{Conflict, ParseTable, RegexDFA, Trie, TrieNode};
 use syn::{
     parenthesized,
     parse::{Parse, ParseStream},
@@ -181,7 +181,12 @@ pub fn process_productions(
         panic!();
     }
     let dfa = RegexDFA::from_regexi(regexi);
-    let eprint_conflict = |node: usize, rule, s|eprintln!("ERROR: {s} / Reduce conflict on rule {rule} of production {}", productions[node].name);
+    let eprint_conflict = |node: usize, rule, s| {
+        eprintln!(
+            "ERROR: {s} / Reduce conflict on rule {rule} of production {}",
+            productions[node].name
+        )
+    };
     let parser = match ParseTable::from_rules(rules, *start_prod) {
         Err(conflicts) => {
             for conflict in conflicts {

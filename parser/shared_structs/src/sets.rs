@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fmt::Debug,
-    ops::{BitOr, BitOrAssign, Index, Not},
+    ops::{BitOr, BitOrAssign, Index, IndexMut, Not},
     rc::Rc,
 };
 
@@ -42,13 +42,11 @@ impl<'a> USizeSet {
             set: &self,
         }
     }
-    pub fn is_subset(&self, other: &Self) -> bool {
-        self.0.len() <= other.0.len()
-            && self
-                .0
-                .iter()
-                .zip(other.0.iter())
-                .all(|(lhs, rhs)| rhs & lhs == *lhs)
+    pub fn is_subset(&self, rhs: &Self) -> bool {
+        self.0.len() <= rhs.0.len() && self.0.iter().zip(rhs.0.iter()).all(|(l, r)| l & r == *l)
+    }
+    pub fn is_disjoint(&self, rhs: &Self) -> bool {
+        self.0.iter().zip(rhs.0.iter()).all(|(l, r)| l & r == 0)
     }
 }
 
@@ -136,46 +134,65 @@ impl<'a> Iterator for USizeSetIterator<'a> {
 
 pub struct IndexableMap<T, U>
 where
-    T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
+    T: Clone + Eq + Ord + PartialEq + PartialOrd,
 {
-    set: BTreeMap<Rc<T>, usize>,
+    map: BTreeMap<Rc<T>, usize>,
     vec: Vec<(Rc<T>, U)>,
 }
 
 impl<T, U> Debug for IndexableMap<T, U>
 where
-    T: Debug + Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
-    U: Debug
+    T: Debug + Clone + Eq + Ord + PartialEq + PartialOrd,
+    U: Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.vec)
+        f.write_str("{\n")?;
+        for (i, (t, u)) in self.vec.iter().enumerate() {
+            write!(f, "\t{i} @ {:?}: {:?},\n", t, u)?
+        }
+        f.write_str("}")?;
+        Ok(())
     }
 }
 
 impl<T, U> IndexableMap<T, U>
 where
-    T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
+    T: Clone + Eq + Ord + PartialEq + PartialOrd,
 {
     pub fn len(&self) -> usize {
         self.vec.len()
     }
+
     pub fn last(&self) -> Option<(Rc<T>, &U)> {
         self.vec.last().map(|(t, u)| (Rc::clone(t), u))
     }
+
     pub fn get_ind(&self, x: &T) -> Option<usize> {
-        self.set.get(x).map(|x| *x)
+        self.map.get(x).map(|x| *x)
     }
+
+    pub fn iter_set(&self) -> impl Iterator<Item = (&Rc<T>, &U, usize)> {
+        self.map
+            .iter()
+            .map(|(_, i)| (&self.vec[*i].0, &self.vec[*i].1, *i))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &(Rc<T>, U)> {
+        self.vec.iter()
+    }
+
     /// @return (inserted elements index, true if the element is new)
     pub fn push(&mut self, t: T, u: U) -> (usize, bool) {
-        if let Some(ind) = self.set.get(&t) {
+        if let Some(ind) = self.map.get(&t) {
             (*ind, false)
         } else {
             let rc = Rc::new(t);
-            self.set.insert(Rc::clone(&rc), self.len());
+            self.map.insert(Rc::clone(&rc), self.len());
             self.vec.push((rc, u));
             (self.vec.len() - 1, true)
         }
     }
+
     pub fn to_vec(self) -> Vec<(T, U)> {
         let IndexableMap { vec, .. } = self;
         vec.into_iter()
@@ -186,7 +203,7 @@ where
 
 impl<T, U> Index<usize> for IndexableMap<T, U>
 where
-    T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
+    T: Clone + Eq + Ord + PartialEq + PartialOrd,
 {
     fn index(&self, index: usize) -> &Self::Output {
         &self.vec[index]
@@ -194,14 +211,23 @@ where
     type Output = (Rc<T>, U);
 }
 
+impl<T, U> IndexMut<usize> for IndexableMap<T, U>
+where
+    T: Clone + Eq + Ord + PartialEq + PartialOrd,
+{
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.vec[index]
+    }
+}
+
 impl<T, U> From<Vec<(T, U)>> for IndexableMap<T, U>
 where
-    T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
+    T: Clone + Eq + Ord + PartialEq + PartialOrd,
 {
     fn from(items: Vec<(T, U)>) -> Self {
         let vec: Vec<_> = items.into_iter().map(|(t, u)| (Rc::new(t), u)).collect();
         Self {
-            set: BTreeMap::from_iter(vec.iter().enumerate().map(|(i, (t, _))| (Rc::clone(t), i))),
+            map: BTreeMap::from_iter(vec.iter().enumerate().map(|(i, (t, _))| (Rc::clone(t), i))),
             vec,
         }
     }
@@ -209,12 +235,12 @@ where
 
 impl<T, U, const N: usize> From<[(T, U); N]> for IndexableMap<T, U>
 where
-    T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
+    T: Clone + Eq + Ord + PartialEq + PartialOrd,
 {
     fn from(items: [(T, U); N]) -> Self {
         let vec: Vec<_> = items.into_iter().map(|(t, u)| (Rc::new(t), u)).collect();
         Self {
-            set: BTreeMap::from_iter(vec.iter().enumerate().map(|(i, (t, _))| (Rc::clone(t), i))),
+            map: BTreeMap::from_iter(vec.iter().enumerate().map(|(i, (t, _))| (Rc::clone(t), i))),
             vec,
         }
     }
@@ -222,12 +248,15 @@ where
 
 impl<T, U> ToTokens for IndexableMap<T, U>
 where
-    T: Clone + Eq + Ord + PartialEq + PartialOrd + ToTokens,
+    T: ToTokens + Clone + Eq + Ord + PartialEq + PartialOrd,
     U: ToTokens,
 {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let mut arr_inner = TokenStream::new();
-        arr_inner.append_separated(self.vec.iter().map(|(t, u)| quote! { (#t, #u) }), Punct::new(',', Spacing::Alone));
+        arr_inner.append_separated(
+            self.vec.iter().map(|(t, u)| quote! { (#t, #u) }),
+            Punct::new(',', Spacing::Alone),
+        );
         tokens.append_all(quote! { vec![#arr_inner] });
     }
 }

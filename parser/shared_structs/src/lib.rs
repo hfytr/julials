@@ -3,7 +3,7 @@ mod parser;
 mod sets;
 
 pub use lexer::{RegexDFA, Trie, TrieNode};
-pub use parser::{ParseAction, ParseTable, Conflict};
+pub use parser::{Conflict, ParseAction, ParseTable};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use std::fmt::Debug;
@@ -103,8 +103,6 @@ impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
     }
 
     pub fn parse(&mut self) -> Result<Box<N>, &'static str> {
-        dbg!(&self.parser.actions);
-        dbg!(&self.parser.rule_lens);
         let mut cur_lexeme = self.lex();
         while let Ok((_, lexeme_id)) = cur_lexeme.as_ref() {
             match self.parser.actions[*self.state_stack.last().unwrap()][*lexeme_id] {
@@ -161,7 +159,7 @@ impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
             self.done = true;
             return Ok((None, self.parser.actions[0].len() - 1));
         } else if self.s.is_empty() {
-            return Err(ERR_NO_MORE_LEXEMES)
+            return Err(ERR_NO_MORE_LEXEMES);
         }
         let (trie_match, trie_len) = if let Some((trie_lexeme, trie_node, trie_len)) =
             self.trie.query_longest(&self.s.as_bytes())
@@ -191,7 +189,8 @@ impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
             regex_match
                 .map(|m| (regex_len, m))
                 .or(trie_match.map(|m| (trie_len, m)))
-        }.ok_or(ERR_INVALID_LEXEME)?;
+        }
+        .ok_or(ERR_INVALID_LEXEME)?;
         let lexeme = (self.lexeme_callbacks[lexeme_id])(&mut self.state, &self.s[0..len]);
         *self.s = &self.s[len..];
         Ok((Some(lexeme), node_id))

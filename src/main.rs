@@ -87,47 +87,49 @@ fn term_node(children: Vec<Box<Node>>) -> Box<Node> {
     }
 }
 
-parser::parser! {
-    Start(S),
-    State(Empty = Empty()),
-    Output(Empty),
-    S => Rule(X X |_| Box::new(Empty())),
-    X => Rule(
-        A X |_| Box::new(Empty()),
-        B |_| Box::new(Empty()),
-    ),
-    A => Literal("a" |_, _| Box::new(Empty())),
-    B => Literal("b" |_, _| Box::new(Empty())),
-}
-
 // parser::parser! {
-//     Start(Expr),
+//     Start(S),
 //     State(Empty = Empty()),
-//     Output(Node),
-//     Expr => Rule(
-//         Term Plus Expr |children| expr_node(children),
-//         Term |mut children| Box::new(Node::Expr(vec![children.pop().unwrap()]))
+//     Output(Empty),
+//     S => Rule(X X |_| Box::new(Empty())),
+//     X => Rule(
+//         A X |_| Box::new(Empty()),
+//         B |_| Box::new(Empty()),
 //     ),
-//     Term => Rule(
-//         Factor Multiply Term |children| term_node(children),
-//         Factor |mut children| Box::new(Node::Term(vec![children.pop().unwrap()]))
-//     ),
-//     Factor => Rule(
-//         Literal,
-//         LeftParen Expr RightParen |mut children| children.swap_remove(1)
-//     ),
-//     Literal => Regex("[0-9]*" |_, text: &str| {
-//         Box::new(Node::Literal(text.parse().unwrap()))
-//     }),
-//     Multiply => Literal("*" |_, _| Box::new(Node::Multiply)),
-//     Plus => Literal("+" |_, _| Box::new(Node::Plus)),
-//     LeftParen => Literal("(" |_, _| Box::new(Node::LeftParen)),
-//     RightParen => Literal(")" |_, _| Box::new(Node::RightParen)),
+//     A => Literal("a" |_, _| Box::new(Empty())),
+//     B => Literal("b" |_, _| Box::new(Empty())),
 // }
 
+parser::parser! {
+    Start(Expr),
+    State(Empty = Empty()),
+    Output(Node),
+    Expr => Rule(
+        Term Plus Expr |children| expr_node(children),
+        Term |mut children| Box::new(Node::Expr(vec![children.pop().unwrap()]))
+    ),
+    Term => Rule(
+        Factor Multiply Term |children| term_node(children),
+        Factor |mut children| Box::new(Node::Term(vec![children.pop().unwrap()]))
+    ),
+    Factor => Rule(
+        Literal,
+        LeftParen Expr RightParen |mut children| children.swap_remove(1)
+    ),
+    Literal => Regex("[0-9]*" |_, text: &str| {
+        Box::new(Node::Literal(text.parse().unwrap()))
+    }),
+    Multiply => Literal("*" |_, _| Box::new(Node::Multiply)),
+    Plus => Literal("+" |_, _| Box::new(Node::Plus)),
+    LeftParen => Literal("(" |_, _| Box::new(Node::LeftParen)),
+    RightParen => Literal(")" |_, _| Box::new(Node::RightParen)),
+}
+
 fn main() {
-    let s = String::from("aaabab");
+    let s = String::from("1");
     let mut slice = s.as_str();
-    let mut engine: Engine<Empty, Empty> = create_parsing_engine(&mut slice).unwrap();
-    engine.parse().unwrap();
+    let mut engine = create_parsing_engine(&mut slice).unwrap();
+    let expr = engine.parse().unwrap();
+    dbg!(&expr);
+    dbg!(expr.eval());
 }
