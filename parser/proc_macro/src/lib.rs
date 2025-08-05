@@ -42,11 +42,11 @@ extern crate proc_macro;
 ///       |state: &mut State, matched_text: &str| -> Node
 ///   - Literal: Specifies a literal defined lexeme within your language. It is of the same form as
 ///     a Regex, except it is specified as:
-///       <LexemeName> => Literal(...) <-callback>
+///       <LexemeName> => Literal(...) <callback>
 ///   - Output: Specifies the output enum produced by parser. Every single Rule must have a name
 ///     which corresponds to a member of this enum.
 ///   - Rule: Specifies a branch node in your AST. It must be of the form:
-///       OutputType::<RuleName> => Rule(<NodeInnerType>, <rule_1> | <rule_2> | ... )
+///       <RuleName> => Rule(<NodeInnerType>, <rule_1>, <rule_2>, ... )
 ///     where each rule is of the form: elem1 elem2 elem3 ... <optional-callback>
 ///     the optional callback is a closure of the form:
 ///       |children: Vec<Box<Node>>| -> Node {...}

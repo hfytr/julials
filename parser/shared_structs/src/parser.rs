@@ -51,16 +51,27 @@ pub struct ParseTable {
     pub rule_lens: Vec<(usize, usize)>,
 }
 
+pub enum Conflict {
+    RR(usize, usize),
+    SR(usize, usize),
+}
+
 impl ParseTable {
-    pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, start: usize) -> Self {
+    pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, start: usize) -> Result<Self, Vec<Conflict>> {
         let dfa = ParseDFA::from_rules(rules, start);
-        let mut actions = vec![vec![ParseAction::Invalid; dfa.rules.len()]; dfa.states.len()];
-        let state_ids: BTreeMap<(&SeedRule, &USizeSet), usize> = dfa
+        dbg!(&dfa);
+        let mut last = (usize::MAX, usize::MAX, usize::MAX);
+        let state_ids: BTreeMap<&SeedRule, usize> = dfa
             .states
             .iter()
-            .enumerate()
-            .map(|(i, ((seed, lookahead), _))| ((seed, lookahead), i))
+            .filter(|((seed, _), _)| {
+                let result = last != *seed;
+                last = *seed;
+                result
+            }).enumerate()
+            .map(|(i, ((seed, _), _))| (seed, i))
             .collect();
+        let mut actions = vec![vec![ParseAction::Invalid; dfa.rules.len()]; state_ids.len()];
         let mut production_ids = vec![];
         let mut rule_lens = vec![];
         let mut i = 0;
@@ -72,23 +83,31 @@ impl ParseTable {
                 i += 1;
             }
         }
+        let mut conflicts = vec![];
         for ((seed, lookahead), trans) in dfa.states.iter() {
-            let id = *state_ids.get(&(seed, lookahead)).unwrap();
-            for (item, next, next_lookahead) in trans {
+            let id = *state_ids.get(&seed).unwrap();
+            for (item, next, _) in trans {
+                if matches!(actions[id][*item], ParseAction::Reduce(_)) {
+                    conflicts.push(Conflict::SR(seed.0, seed.1));
+                }
                 actions[id][*item] = if dfa.rules[*item].len() == 0 {
-                    ParseAction::Shift(*state_ids.get(&(&next, &next_lookahead)).unwrap())
+                    ParseAction::Shift(*state_ids.get(&next).unwrap())
                 } else {
-                    ParseAction::Goto(*state_ids.get(&(&next, &next_lookahead)).unwrap())
+                    ParseAction::Goto(*state_ids.get(&next).unwrap())
                 };
             }
             if seed.2 == dfa.rules[seed.0][seed.1].len() {
                 for item in lookahead.iter() {
+                    if matches!(actions[id][item], ParseAction::Reduce(_)) {
+                        conflicts.push(Conflict::RR(seed.0, seed.1));
+                    }
                     let production = production_ids[seed.0][seed.1];
                     actions[id][item] = ParseAction::Reduce(production);
                 }
             }
         }
-        Self { actions, rule_lens }
+        if conflicts.is_empty() {
+        Ok(Self { actions, rule_lens })} else {Err(conflicts)}
     }
 
     pub fn from_raw(

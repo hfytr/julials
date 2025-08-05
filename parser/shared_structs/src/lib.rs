@@ -3,7 +3,7 @@ mod parser;
 mod sets;
 
 pub use lexer::{RegexDFA, Trie, TrieNode};
-pub use parser::{ParseAction, ParseTable};
+pub use parser::{ParseAction, ParseTable, Conflict};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use std::fmt::Debug;
@@ -11,7 +11,7 @@ use std::fmt::Debug;
 const ERR_INVALID_LEXEME: &'static str = "The lexing engine hit an invalid sequence.";
 const ERR_REDUCED_NONTERMINAL_INVALID: &'static str =
     "Non-terminal mapped to a non-goto action in the parse-table.";
-const ERR_PREMATURE_FIN: &'static str = "The input lexeme stream terminated unexpectedly.";
+const ERR_NO_MORE_LEXEMES: &'static str = "The lexer was called after returning EOF.";
 const ERR_EXTRA_TOKENS: &'static str =
     "Extra tokens were encountered after parsing the start production";
 const ERR_STATE_STACK_EMPTY: &'static str = "Attempted to pop from an empty state stack.";
@@ -41,12 +41,6 @@ fn fmt_maybe_arr(f: &mut std::fmt::Formatter<'_>, a: &[Option<usize>; 256]) -> s
         write!(f, "{}: {:?}, ", i, e)?
     }
     f.write_str("]")
-}
-
-pub enum LexResponse<N> {
-    Invalid,
-    Done,
-    Lexeme((Box<N>, usize)),
 }
 
 pub struct Engine<'a, 'b, N, S> {
@@ -80,7 +74,7 @@ impl<N: Debug, S: Debug> Debug for Engine<'_, '_, N, S> {
     }
 }
 
-impl<'a, 'b, N, S> Engine<'a, 'b, N, S> {
+impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
     pub fn from_raw(
         (actions, rule_lens): (Vec<Vec<(usize, usize)>>, Vec<(usize, usize)>),
         dfa: (
@@ -109,11 +103,17 @@ impl<'a, 'b, N, S> Engine<'a, 'b, N, S> {
     }
 
     pub fn parse(&mut self) -> Result<Box<N>, &'static str> {
-        while let Some((lexeme, lexeme_id)) = self.lex() {
-            match self.parser.actions[*self.state_stack.last().unwrap()][lexeme_id] {
+        dbg!(&self.parser.actions);
+        dbg!(&self.parser.rule_lens);
+        let mut cur_lexeme = self.lex();
+        while let Ok((_, lexeme_id)) = cur_lexeme.as_ref() {
+            match self.parser.actions[*self.state_stack.last().unwrap()][*lexeme_id] {
                 ParseAction::Shift(state) => {
                     self.state_stack.push(state);
-                    self.node_stack.push(lexeme);
+                    if let Ok((Some(lexeme), _)) = cur_lexeme {
+                        self.node_stack.push(lexeme);
+                    }
+                    cur_lexeme = self.lex();
                 }
                 ParseAction::Reduce(rule) => {
                     let (rule_len, non_terminal) = self.parser.rule_lens[rule];
@@ -129,11 +129,11 @@ impl<'a, 'b, N, S> Engine<'a, 'b, N, S> {
                     self.node_stack
                         .push((self.rule_callbacks[non_terminal])(children));
                     if non_terminal == 0 {
-                        if !self.node_stack.is_empty() {
+                        if self.node_stack.len() != 1 {
                             return Result::Err(ERR_NODE_STACK_NOT_EMPTY);
-                        } else if !self.state_stack.is_empty() {
+                        } else if self.state_stack.len() != 1 {
                             return Result::Err(ERR_STATE_STACK_NOT_EMPTY);
-                        } else if self.lex().is_some() {
+                        } else if self.lex().is_ok() {
                             return Result::Err(ERR_EXTRA_TOKENS);
                         } else {
                             return Result::Ok(self.node_stack.pop().unwrap());
@@ -153,13 +153,15 @@ impl<'a, 'b, N, S> Engine<'a, 'b, N, S> {
                 ParseAction::Goto(_) => return Result::Err(ERR_TERMINAL_GOTO),
             }
         }
-        Result::Err(ERR_PREMATURE_FIN)
+        Err(cur_lexeme.unwrap_err())
     }
 
-    pub fn lex(&mut self) -> Option<(Box<N>, usize)> {
-        if self.s.is_empty() {
+    pub fn lex(&mut self) -> Result<(Option<Box<N>>, usize), &'static str> {
+        if self.s.is_empty() && !self.done {
             self.done = true;
-            return None;
+            return Ok((None, self.parser.actions[0].len() - 1));
+        } else if self.s.is_empty() {
+            return Err(ERR_NO_MORE_LEXEMES)
         }
         let (trie_match, trie_len) = if let Some((trie_lexeme, trie_node, trie_len)) =
             self.trie.query_longest(&self.s.as_bytes())
@@ -189,10 +191,9 @@ impl<'a, 'b, N, S> Engine<'a, 'b, N, S> {
             regex_match
                 .map(|m| (regex_len, m))
                 .or(trie_match.map(|m| (trie_len, m)))
-        }
-        .expect(ERR_INVALID_LEXEME);
+        }.ok_or(ERR_INVALID_LEXEME)?;
         let lexeme = (self.lexeme_callbacks[lexeme_id])(&mut self.state, &self.s[0..len]);
         *self.s = &self.s[len..];
-        Some((lexeme, node_id))
+        Ok((Some(lexeme), node_id))
     }
 }

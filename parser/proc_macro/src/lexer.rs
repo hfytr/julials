@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fmt::Debug};
 
 use quote::ToTokens;
-use shared_structs::{ParseTable, RegexDFA, Trie, TrieNode};
+use shared_structs::{ParseTable, RegexDFA, Trie, TrieNode, Conflict};
 use syn::{
     parenthesized,
     parse::{Parse, ParseStream},
@@ -137,11 +137,11 @@ pub fn process_productions(
         |(mut regexi, mut production_ids, mut lexeme_i), (production_i, production)| {
             match &production.prod_type {
                 ProductionType::Regex((patt, _)) => {
-                    regexi.push((patt.as_str(), lexeme_i, production_ids.len()));
+                    regexi.push((patt.as_str(), lexeme_i, production_ids.len() + 1));
                     lexeme_i += 1;
                 }
                 ProductionType::Literal((patt, _)) => {
-                    trie.insert(patt.as_bytes(), (lexeme_i, production_ids.len()));
+                    trie.insert(patt.as_bytes(), (lexeme_i, production_ids.len() + 1));
                     lexeme_i += 1;
                 }
                 ProductionType::Rule(_) => {}
@@ -181,7 +181,18 @@ pub fn process_productions(
         panic!();
     }
     let dfa = RegexDFA::from_regexi(regexi);
-    dbg!(&production_ids);
-    let parser = ParseTable::from_rules(rules, *start_prod);
+    let eprint_conflict = |node: usize, rule, s|eprintln!("ERROR: {s} / Reduce conflict on rule {rule} of production {}", productions[node].name);
+    let parser = match ParseTable::from_rules(rules, *start_prod) {
+        Err(conflicts) => {
+            for conflict in conflicts {
+                match conflict {
+                    Conflict::RR(node, rule) => eprint_conflict(node, rule, "Reduce"),
+                    Conflict::SR(node, rule) => eprint_conflict(node, rule, "Shift"),
+                }
+            }
+            panic!();
+        }
+        Ok(parser) => parser,
+    };
     (dfa, trie, parser)
 }
