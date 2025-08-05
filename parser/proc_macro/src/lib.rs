@@ -6,8 +6,7 @@ use quote::{quote, TokenStreamExt};
 use shared_structs::{ParseTable, RegexDFA, Trie};
 use std::process::exit;
 use syn::{
-    parse::{discouraged::Speculative, Parse},
-    Error, PathSegment, Token,
+    parse::{discouraged::Speculative, Parse}, token::Token, Error, PathSegment, Token
 };
 
 const ERR_STATE_NOT_SPECIFIED: &'static str =
@@ -178,6 +177,9 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         Punct::new(',', Spacing::Alone),
     );
     let mut rule_callbacks_inner = TokenStream::new();
+    let default_rule_callback = quote! { Box::new(|mut children| children.swap_remove(0)) };
+    rule_callbacks_inner.append_all(default_rule_callback.clone());
+    rule_callbacks_inner.append_all(quote! { , });
     rule_callbacks_inner.append_separated(
         productions.into_iter().flat_map(|production| {
             if let ProductionType::Rule(rules) = production.prod_type {
@@ -190,7 +192,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                 if let Some(callback) = callback.as_ref() {
                     quote! { Box::new(#callback) }
                 } else {
-                    quote! { Box::new(|mut children| children.swap_remove(0)) }
+                    default_rule_callback.clone()
                 }
             })
         }),

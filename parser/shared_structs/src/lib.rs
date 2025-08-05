@@ -125,7 +125,7 @@ impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
                             .ok_or(ERR_NODE_STACK_EMPTY)?,
                     );
                     self.node_stack
-                        .push((self.rule_callbacks[non_terminal])(children));
+                        .push((self.rule_callbacks[rule])(children));
                     if non_terminal == 0 {
                         if self.node_stack.len() != 1 {
                             return Result::Err(ERR_NODE_STACK_NOT_EMPTY);

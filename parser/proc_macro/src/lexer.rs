@@ -150,6 +150,7 @@ pub fn process_productions(
             (regexi, production_ids, lexeme_i)
         },
     );
+    dbg!(production_ids.iter().map(|(x, y)| (y, x)).collect::<BTreeMap<_, _>>());
     let mut any_errors = false;
     let start_prod = production_ids
         .get(start_prod)
@@ -181,18 +182,19 @@ pub fn process_productions(
         panic!();
     }
     let dfa = RegexDFA::from_regexi(regexi);
-    let eprint_conflict = |node: usize, rule, s| {
+    let eprint_conflict = |node: usize, rule, item: usize, s| {
+        let item_name = productions.get(item).map(|p| p.name.to_string()).unwrap_or(String::from("EOF"));
         eprintln!(
-            "ERROR: {s} / Reduce conflict on rule {rule} of production {}",
-            productions[node].name
+            "ERROR: {s} / Reduce conflict on item {} in rule {rule} of production {}",
+            item_name, productions[node].name
         )
     };
     let parser = match ParseTable::from_rules(rules, *start_prod) {
         Err(conflicts) => {
             for conflict in conflicts {
                 match conflict {
-                    Conflict::RR(node, rule) => eprint_conflict(node, rule, "Reduce"),
-                    Conflict::SR(node, rule) => eprint_conflict(node, rule, "Shift"),
+                    Conflict::RR(node, rule, item) => eprint_conflict(node, rule, item, "Reduce"),
+                    Conflict::SR(node, rule, item) => eprint_conflict(node, rule, item, "Shift"),
                 }
             }
             panic!();

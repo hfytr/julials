@@ -148,7 +148,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("{\n")?;
         for (i, (t, u)) in self.vec.iter().enumerate() {
-            write!(f, "\t{i} @ {:?}: {:?},\n", t, u)?
+            write!(f, "    {i} @ {:?}: {:?},\n", t, u)?
         }
         f.write_str("}")?;
         Ok(())

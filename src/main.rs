@@ -2,8 +2,6 @@
 
 use std::fmt::Display;
 
-use parser::Engine;
-
 #[derive(Default, Debug)]
 struct Empty();
 
@@ -73,6 +71,7 @@ fn expr_node(children: Vec<Box<Node>>) -> Box<Node> {
 }
 
 fn term_node(children: Vec<Box<Node>>) -> Box<Node> {
+    dbg!(&children);
     if let Result::Ok([factor, box Node::Multiply, mut term @ box Node::Term(_)]) =
         <[_; 3]>::try_from(children)
     {
@@ -86,19 +85,6 @@ fn term_node(children: Vec<Box<Node>>) -> Box<Node> {
         panic!();
     }
 }
-
-// parser::parser! {
-//     Start(S),
-//     State(Empty = Empty()),
-//     Output(Empty),
-//     S => Rule(X X |_| Box::new(Empty())),
-//     X => Rule(
-//         A X |_| Box::new(Empty()),
-//         B |_| Box::new(Empty()),
-//     ),
-//     A => Literal("a" |_, _| Box::new(Empty())),
-//     B => Literal("b" |_, _| Box::new(Empty())),
-// }
 
 parser::parser! {
     Start(Expr),
@@ -126,7 +112,7 @@ parser::parser! {
 }
 
 fn main() {
-    let s = String::from("1");
+    let s = String::from("1+5");
     let mut slice = s.as_str();
     let mut engine = create_parsing_engine(&mut slice).unwrap();
     let expr = engine.parse().unwrap();

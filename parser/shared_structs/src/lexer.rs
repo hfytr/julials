@@ -120,7 +120,7 @@ const ESCAPE_ARRAY: [(u8, u8); 9] = [
 ];
 
 #[derive(Debug)]
-struct Empty();
+pub struct Empty();
 
 impl ToTokens for Empty {
     fn to_tokens(&self, tokens: &mut TokenStream) {
