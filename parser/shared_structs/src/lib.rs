@@ -44,7 +44,7 @@ fn fmt_maybe_arr(f: &mut std::fmt::Formatter<'_>, a: &[Option<usize>; 256]) -> s
 }
 
 pub struct Engine<'a, 'b, N, S> {
-    parser: ParseTable,
+    pub parser: ParseTable,
     trie: Trie,
     dfa: RegexDFA,
     // TODO: make callbacks not return Box. probably require break out lexeme enum
@@ -52,8 +52,8 @@ pub struct Engine<'a, 'b, N, S> {
     rule_callbacks: Vec<Box<dyn Fn(Vec<Box<N>>) -> Box<N>>>,
     state: S,
     done: bool,
-    pub s: &'a mut &'b str,
     // for user dbg
+    pub s: &'a mut &'b str,
     pub state_stack: Vec<usize>,
     pub node_stack: Vec<Box<N>>,
 }
@@ -124,8 +124,7 @@ impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
                             .checked_sub(rule_len)
                             .ok_or(ERR_NODE_STACK_EMPTY)?,
                     );
-                    self.node_stack
-                        .push((self.rule_callbacks[rule])(children));
+                    self.node_stack.push((self.rule_callbacks[rule])(children));
                     if non_terminal == 0 {
                         if self.node_stack.len() != 1 {
                             return Result::Err(ERR_NODE_STACK_NOT_EMPTY);

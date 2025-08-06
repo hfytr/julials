@@ -59,19 +59,25 @@ pub enum Conflict {
 impl ParseTable {
     pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, start: usize) -> Result<Self, Vec<Conflict>> {
         let dfa = ParseDFA::from_rules(rules, start);
-        dbg!(&dfa.states);
         let mut conflicts = vec![];
-        let mut state_ids = vec![usize::MAX; dfa.states.len()];
-        let mut cur_id = usize::MAX;
-        let mut last = &vec![];
-        for (state, _, i) in dfa.states.iter_set() {
-            let seed: &Vec<SeedRule> = &state.0;
-            if last != seed {
-                last = seed;
-                cur_id = cur_id.wrapping_add(1);
+        #[cfg(not(feature = "lr1"))]
+        let state_ids = {
+            let mut state_ids = vec![usize::MAX; dfa.states.len()];
+            let mut cur_id = usize::MAX;
+            let mut last = &vec![];
+            dbg!(dfa.states.iter_set().collect::<Vec<_>>());
+            for (state, _, i) in dfa.states.iter_set() {
+                let seed: &Vec<SeedRule> = &state.0;
+                if last != seed {
+                    last = seed;
+                    cur_id = cur_id.wrapping_add(1);
+                }
+                state_ids[i] = cur_id
             }
-            state_ids[i] = cur_id
-        }
+            state_ids
+        };
+        #[cfg(feature = "lr1")]
+        let state_ids: Vec<_> = (0..dfa.states.len()).collect();
         let mut actions = vec![vec![ParseAction::Invalid; dfa.rules.len()]; state_ids.len()];
         let mut production_ids = vec![];
         let mut rule_lens = vec![];
@@ -84,7 +90,6 @@ impl ParseTable {
                 i += 1;
             }
         }
-        dbg!(&production_ids);
         for (i, (state, trans)) in dfa.states.iter().enumerate() {
             let (seeds, lookaheads) = &**state;
             let id = state_ids[i];
@@ -98,15 +103,17 @@ impl ParseTable {
                         conflicts.push(Conflict::SR(seed.0, seed.1, item));
                     }
                     actions[id][item] = if dfa.rules[item].len() == 0 {
-                        ParseAction::Shift(*state_ids.get(next).unwrap())
+                        ParseAction::Shift(state_ids[next])
                     } else {
-                        ParseAction::Goto(*state_ids.get(next).unwrap())
+                        ParseAction::Goto(state_ids[next])
                     };
                 }
                 if seed.2 == dfa.rules[seed.0][seed.1].len() {
                     for item in lookahead.iter() {
                         let production = production_ids[seed.0][seed.1];
-                        if let ParseAction::Reduce(old_prod) = actions[id][item] && old_prod != production {
+                        if let ParseAction::Reduce(old_prod) = actions[id][item]
+                            && old_prod != production
+                        {
                             conflicts.push(Conflict::RR(seed.0, seed.1, item));
                         }
                         actions[id][item] = ParseAction::Reduce(production);
@@ -261,9 +268,13 @@ fn get_derived_lookaheads(
         }
     }
     let mut result = vec![None; rules.len()];
+    let cur_lookahead = rules[seed.0][seed.1]
+        .get(seed.2 + 1)
+        .map(|n| &firsts[*n])
+        .unwrap_or(seed_lookahead);
     helper(
         rules[seed.0][seed.1][seed.2],
-        seed_lookahead,
+        cur_lookahead,
         firsts,
         &mut result,
         rules,
@@ -285,10 +296,13 @@ impl ParseDFA {
             .collect::<Vec<_>>();
 
         while let Some(cur_state) = stack.pop() {
+            // every non-reduce seed and its lookahead
             let iter_state = || {
-                states[cur_state].0.0
+                states[cur_state]
+                    .0
+                     .0
                     .iter()
-                    .zip(states[cur_state].0.1.iter())
+                    .zip(states[cur_state].0 .1.iter())
                     .filter(|(seed, _)| seed.2 < rules[seed.0][seed.1].len())
             };
             if iter_state().next().is_none() {
@@ -322,7 +336,9 @@ impl ParseDFA {
                     trans[edge].1[tran] |= derived_lookaheads[i][rule.0].as_ref().unwrap();
                 } else {
                     trans[edge].0.push(new_seed);
-                    trans[edge].1.push(derived_lookaheads[i][rule.0].clone().unwrap());
+                    trans[edge]
+                        .1
+                        .push(derived_lookaheads[i][rule.0].clone().unwrap());
                 }
             }
             let true_tran = trans
@@ -330,9 +346,9 @@ impl ParseDFA {
                 .map(|state| {
                     (state.0.len() > 0).then(|| {
                         states.get_ind(&state).unwrap_or_else(|| {
-                            let state = states.push(state, vec![]).0;
-                            stack.push(state);
-                            state
+                            let state_id = states.push(state, vec![]).0;
+                            stack.push(state_id);
+                            state_id
                         })
                     })
                 })

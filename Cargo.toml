@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-parser = { path = "parser" }
+parser = { path = "parser", features = ["lr1"] }

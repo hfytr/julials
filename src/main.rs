@@ -58,12 +58,9 @@ impl Display for Node {
 fn expr_node(children: Vec<Box<Node>>) -> Box<Node> {
     if let Result::Ok([term @ box Node::Term(_), box Node::Plus, mut expr @ box Node::Expr(_)]) =
         <[_; 3]>::try_from(children)
+        && let box Node::Expr(ref mut components) = expr
     {
-        if let box Node::Term(ref mut components) = expr {
-            components.push(term);
-        } else {
-            panic!();
-        }
+        components.push(term);
         expr
     } else {
         panic!();
@@ -71,15 +68,11 @@ fn expr_node(children: Vec<Box<Node>>) -> Box<Node> {
 }
 
 fn term_node(children: Vec<Box<Node>>) -> Box<Node> {
-    dbg!(&children);
     if let Result::Ok([factor, box Node::Multiply, mut term @ box Node::Term(_)]) =
         <[_; 3]>::try_from(children)
+        && let box Node::Term(ref mut components) = term
     {
-        if let box Node::Term(ref mut components) = term {
-            components.push(factor);
-        } else {
-            panic!();
-        }
+        components.push(factor);
         term
     } else {
         panic!();
@@ -112,10 +105,11 @@ parser::parser! {
 }
 
 fn main() {
-    let s = String::from("1+5");
+    let s = String::from("1*7+(5+8)*(6+3*(5+7)+1)");
     let mut slice = s.as_str();
     let mut engine = create_parsing_engine(&mut slice).unwrap();
-    let expr = engine.parse().unwrap();
+    let expr = engine.parse();
+    let expr = expr.unwrap();
     dbg!(&expr);
     dbg!(expr.eval());
 }

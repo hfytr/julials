@@ -6,7 +6,8 @@ use quote::{quote, TokenStreamExt};
 use shared_structs::{ParseTable, RegexDFA, Trie};
 use std::process::exit;
 use syn::{
-    parse::{discouraged::Speculative, Parse}, token::Token, Error, PathSegment, Token
+    parse::{discouraged::Speculative, Parse},
+    Error, PathSegment, Token,
 };
 
 const ERR_STATE_NOT_SPECIFIED: &'static str =
