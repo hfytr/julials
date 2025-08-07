@@ -3,7 +3,7 @@ mod lexer;
 use crate::lexer::{process_productions, Production, ProductionType};
 use proc_macro2::{Ident, Punct, Spacing, TokenStream};
 use quote::{quote, TokenStreamExt};
-use shared_structs::{ParseTable, RegexDFA, Trie};
+use shared_structs::{DynParseTable, DynTrie, RegexDFA};
 use std::process::exit;
 use syn::{
     parse::{discouraged::Speculative, Parse},
@@ -74,13 +74,13 @@ impl<T> Context for syn::Result<T> {
 
 struct MacroBody {
     dfa: RegexDFA,
-    trie: Trie,
+    trie: DynTrie,
     // TODO allow full paths as out type
     out_type: PathSegment,
     productions: Vec<Production>,
     state_type: syn::Ident,
     init_state: syn::Expr,
-    parser: ParseTable,
+    parser: DynParseTable,
 }
 
 impl Parse for MacroBody {
@@ -160,12 +160,20 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         init_state,
         parser,
     } = syn::parse2(input)?;
+
     let mut lexeme_callbacks_inner = TokenStream::new();
+    let num_tokens = productions.len() + 2;
+    let num_literals = trie.0.len();
+    let num_lex_states = dfa.fin.len();
+    let num_parse_states = parser.actions.len();
+    let num_rules = parser.rule_lens.len();
+    let mut num_terminals: usize = 0;
     lexeme_callbacks_inner.append_separated(
         productions
             .iter()
             .filter(|production| !matches!(production.prod_type, ProductionType::Rule(_)))
             .map(|production| {
+                num_terminals += 1;
                 if let ProductionType::Literal((_, ref callback)) = production.prod_type {
                     quote! { Box::new(#callback) }
                 } else if let ProductionType::Regex((_, ref callback)) = production.prod_type {
@@ -177,6 +185,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
             }),
         Punct::new(',', Spacing::Alone),
     );
+
     let mut rule_callbacks_inner = TokenStream::new();
     let default_rule_callback = quote! { Box::new(|mut children| children.swap_remove(0)) };
     rule_callbacks_inner.append_all(default_rule_callback.clone());
@@ -201,14 +210,14 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
     );
     Ok(quote! {
         fn create_parsing_engine<'a, 'b>(s: &'a mut &'b str) ->
-            Result<parser::Engine<'a, 'b, #out_type, #state_type>, &'static str>
+            Result<parser::Engine<'a, 'b, #out_type, #state_type, #num_terminals, #num_tokens, #num_literals, #num_lex_states, #num_parse_states, #num_rules>, &'static str>
         {
             parser::Engine::from_raw(
                 #parser,
                 #dfa,
                 #trie,
-                vec![#lexeme_callbacks_inner],
-                vec![#rule_callbacks_inner],
+                [#lexeme_callbacks_inner],
+                [#rule_callbacks_inner],
                 #init_state,
                 s
             )

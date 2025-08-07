@@ -9,6 +9,7 @@ use std::{collections::BTreeMap, fmt::Debug, rc::Rc};
 
 type NFAEdge = Option<(u8, u8)>;
 
+#[derive(Clone, Copy)]
 pub struct TrieNode {
     pub fin: Option<(usize, usize)>,
     pub children: [Option<usize>; 256],
@@ -46,32 +47,20 @@ impl ToTokens for TrieNode {
     }
 }
 
-#[derive(Debug)]
-pub struct Trie(pub Vec<TrieNode>);
+pub struct Trie<const NUM_LITERALS: usize>(pub [TrieNode; NUM_LITERALS]);
 
-impl Trie {
-    pub fn from_raw(trie_raw: Vec<(Option<(usize, usize)>, [Option<usize>; 256])>) -> Self {
-        Trie(
-            trie_raw
-                .into_iter()
-                .map(|(fin, children)| TrieNode::from_raw(fin, children))
-                .collect(),
-        )
-    }
-
-    pub fn insert(&mut self, s: &[u8], x: (usize, usize)) {
-        let mut cur = 0;
-        for c in s {
-            cur = self.0[cur].children[*c as usize].unwrap_or_else(|| {
-                self.0[cur].children[*c as usize] = Some(self.0.len());
-                self.0.push(TrieNode {
-                    fin: None,
-                    children: [None; 256],
-                });
-                self.0.len() - 1
-            });
+impl<const NUM_LITERALS: usize> Trie<NUM_LITERALS> {
+    pub fn from_raw(
+        trie_raw: [(Option<(usize, usize)>, [Option<usize>; 256]); NUM_LITERALS],
+    ) -> Self {
+        let mut nodes = [TrieNode {
+            fin: None,
+            children: [None; 256],
+        }; NUM_LITERALS];
+        for (i, (fin, children)) in trie_raw.into_iter().enumerate() {
+            nodes[i] = TrieNode { fin, children };
         }
-        self.0[cur].fin = Some(x)
+        Trie(nodes)
     }
 
     pub fn query_longest(&self, s: &[u8]) -> Option<(usize, usize, usize)> {
@@ -91,19 +80,37 @@ impl Trie {
     }
 }
 
-impl<const N: usize> From<[TrieNode; N]> for Trie {
+#[derive(Debug)]
+pub struct DynTrie(pub Vec<TrieNode>);
+
+impl DynTrie {
+    pub fn insert(&mut self, s: &[u8], x: (usize, usize)) {
+        let mut cur = 0;
+        for c in s {
+            cur = self.0[cur].children[*c as usize].unwrap_or_else(|| {
+                self.0[cur].children[*c as usize] = Some(self.0.len());
+                self.0.push(TrieNode {
+                    fin: None,
+                    children: [None; 256],
+                });
+                self.0.len() - 1
+            });
+        }
+        self.0[cur].fin = Some(x)
+    }
+}
+
+impl<const N: usize> From<[TrieNode; N]> for DynTrie {
     fn from(a: [TrieNode; N]) -> Self {
         Self(a.into_iter().collect())
     }
 }
 
-impl ToTokens for Trie {
+impl ToTokens for DynTrie {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let mut result = TokenStream::new();
         result.append_separated(self.0.iter(), Punct::new(',', Spacing::Alone));
-        tokens.append_all(quote! {
-            vec![#result]
-        });
+        tokens.append_all(quote! { [#result] });
     }
 }
 
@@ -128,6 +135,11 @@ impl ToTokens for Empty {
     }
 }
 
+pub struct RegexTable<const NUM_STATES: usize> {
+    pub trans: [[Option<usize>; 256]; NUM_STATES],
+    pub fin: [Option<(usize, usize)>; NUM_STATES],
+}
+
 pub struct RegexDFA {
     pub states: IndexableMap<USizeSet, Empty>,
     pub trans: Vec<[Option<usize>; 256]>,
@@ -150,21 +162,6 @@ impl Debug for RegexDFA {
 }
 
 impl RegexDFA {
-    pub fn from_raw(
-        (states_raw, trans, fin): (
-            Vec<(Vec<u64>, ())>,
-            Vec<[Option<usize>; 256]>,
-            Vec<Option<(usize, usize)>>,
-        ),
-    ) -> Self {
-        let states_vec: Vec<_> = states_raw
-            .into_iter()
-            .map(|(state, _)| (USizeSet(state), Empty()))
-            .collect();
-        let states = IndexableMap::from(states_vec);
-        Self { states, trans, fin }
-    }
-
     pub fn from_regexi(regexi: Vec<(&str, usize, usize)>) -> Self {
         let nfa = NFA::from_regexi(regexi);
         let init_state = nfa.epsilon_closure(0);
@@ -253,9 +250,8 @@ impl ToTokens for RegexDFA {
             },
             &self.fin,
         );
-        let states = &self.states;
         tokens.append_all(quote! {
-            (#states, vec![#trans_inner], vec![#fin_inner])
+            ([#trans_inner], [#fin_inner])
         });
     }
 }

@@ -45,8 +45,36 @@ impl ToTokens for ParseAction {
     }
 }
 
+pub struct ParseTable<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize> {
+    pub actions: [[ParseAction; NUM_TOKENS]; NUM_STATES],
+    pub rule_lens: [(usize, usize); NUM_RULES],
+}
+
+impl<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize>
+    ParseTable<NUM_RULES, NUM_STATES, NUM_TOKENS>
+{
+    pub fn from_raw(
+        actions_raw: [[(usize, usize); NUM_TOKENS]; NUM_STATES],
+        rule_lens: [(usize, usize); NUM_RULES],
+    ) -> Result<Self, &'static str> {
+        let mut actions = [[ParseAction::Invalid; NUM_TOKENS]; NUM_STATES];
+        for (i, state_actions) in actions_raw.into_iter().enumerate() {
+            for (j, (action_type, value)) in state_actions.into_iter().enumerate() {
+                actions[i][j] = match action_type {
+                    PA_ID_SHIFT => ParseAction::Shift(value),
+                    PA_ID_GOTO => ParseAction::Goto(value),
+                    PA_ID_REDUCE => ParseAction::Reduce(value),
+                    PA_ID_INVALID => ParseAction::Invalid,
+                    _ => return Err(ERR_INVALID_PA_ID),
+                };
+            }
+        }
+        Ok(Self { actions, rule_lens })
+    }
+}
+
 #[derive(Debug)]
-pub struct ParseTable {
+pub struct DynParseTable {
     pub actions: Vec<Vec<ParseAction>>,
     pub rule_lens: Vec<(usize, usize)>,
 }
@@ -56,7 +84,7 @@ pub enum Conflict {
     SR(usize, usize, usize),
 }
 
-impl ParseTable {
+impl DynParseTable {
     pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, start: usize) -> Result<Self, Vec<Conflict>> {
         let dfa = ParseDFA::from_rules(rules, start);
         let mut conflicts = vec![];
@@ -73,7 +101,7 @@ impl ParseTable {
                 }
                 state_ids[i] = cur_id
             }
-            (state_ids, cur_id+1)
+            (state_ids, cur_id + 1)
         };
         #[cfg(feature = "lr1")]
         let (state_ids, max_id) = ((0..dfa.states.len()).collect::<Vec<_>>(), dfa.states.len());
@@ -125,38 +153,16 @@ impl ParseTable {
             .then_some(Self { actions, rule_lens })
             .ok_or(conflicts)
     }
-
-    pub fn from_raw(
-        actions_raw: Vec<Vec<(usize, usize)>>,
-        rule_lens: Vec<(usize, usize)>,
-    ) -> Result<Self, &'static str> {
-        let actions = actions_raw
-            .into_iter()
-            .map(|state| {
-                state
-                    .into_iter()
-                    .map(|(action_type, value)| match action_type {
-                        PA_ID_SHIFT => Ok(ParseAction::Shift(value)),
-                        PA_ID_GOTO => Ok(ParseAction::Goto(value)),
-                        PA_ID_REDUCE => Ok(ParseAction::Reduce(value)),
-                        PA_ID_INVALID => Ok(ParseAction::Invalid),
-                        _ => Result::Err(ERR_INVALID_PA_ID),
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { actions, rule_lens })
-    }
 }
 
-impl ToTokens for ParseTable {
+impl ToTokens for DynParseTable {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let mut actions_inner = TokenStream::new();
         actions_inner.append_separated(
             self.actions.iter().map(|state_actions| {
                 let mut state_inner = TokenStream::new();
                 state_inner.append_separated(state_actions.iter(), Punct::new(',', Spacing::Alone));
-                quote! { vec![#state_inner] }
+                quote! { [#state_inner] }
             }),
             Punct::new(',', Spacing::Alone),
         );
@@ -167,7 +173,7 @@ impl ToTokens for ParseTable {
                 .map(|(len, nt)| quote! { (#len, #nt) }),
             Punct::new(',', Spacing::Alone),
         );
-        tokens.append_all(quote! { (vec![#actions_inner], vec![#rule_lens_inner]) });
+        tokens.append_all(quote! { ([#actions_inner], [#rule_lens_inner]) });
     }
 }
 

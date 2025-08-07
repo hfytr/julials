@@ -2,11 +2,13 @@ mod lexer;
 mod parser;
 mod sets;
 
-pub use lexer::{RegexDFA, Trie, TrieNode};
-pub use parser::{Conflict, ParseAction, ParseTable};
+pub use lexer::{DynTrie, RegexDFA, Trie, TrieNode};
+pub use parser::{Conflict, DynParseTable, ParseAction, ParseTable};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use std::fmt::Debug;
+
+use crate::lexer::RegexTable;
 
 const ERR_INVALID_LEXEME: &'static str = "The lexing engine hit an invalid sequence.";
 const ERR_REDUCED_NONTERMINAL_INVALID: &'static str =
@@ -43,13 +45,24 @@ fn fmt_maybe_arr(f: &mut std::fmt::Formatter<'_>, a: &[Option<usize>; 256]) -> s
     f.write_str("]")
 }
 
-pub struct Engine<'a, 'b, N, S> {
-    pub parser: ParseTable,
-    trie: Trie,
-    dfa: RegexDFA,
+pub struct Engine<
+    'a,
+    'b,
+    N,
+    S,
+    const TERMINALS: usize,
+    const NUM_TOKENS: usize,
+    const NUM_LITERALS: usize,
+    const NUM_LEX_STATES: usize,
+    const NUM_PARSE_STATES: usize,
+    const NUM_RULES: usize,
+> {
+    pub parser: ParseTable<NUM_RULES, NUM_PARSE_STATES, NUM_TOKENS>,
+    trie: Trie<NUM_LITERALS>,
+    dfa: RegexTable<NUM_LEX_STATES>,
     // TODO: make callbacks not return Box. probably require break out lexeme enum
-    lexeme_callbacks: Vec<Box<dyn Fn(&mut S, &str) -> N>>,
-    rule_callbacks: Vec<Box<dyn Fn(Vec<N>) -> N>>,
+    lexeme_callbacks: [Box<dyn Fn(&mut S, &str) -> N>; TERMINALS],
+    rule_callbacks: [Box<dyn Fn(Vec<N>) -> N>; NUM_RULES],
     state: S,
     done: bool,
     // for user dbg
@@ -58,40 +71,50 @@ pub struct Engine<'a, 'b, N, S> {
     pub node_stack: Vec<N>,
 }
 
-impl<N: Debug, S: Debug> Debug for Engine<'_, '_, N, S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Engine(")?;
-        self.trie.fmt(f)?;
-        f.write_str(",\n")?;
-        self.dfa.fmt(f)?;
-        f.write_str(",\n")?;
-        self.state.fmt(f)?;
-        f.write_str("\n")?;
-        self.parser.fmt(f)?;
-        f.write_str("),\n")?;
-        self.s.fmt(f)?;
-        f.write_str("),\n")
-    }
-}
-
-impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
+impl<
+        'a,
+        'b,
+        N: Debug,
+        S: Debug,
+        const TERMINALS: usize,
+        const NUM_TOKENS: usize,
+        const NUM_LITERALS: usize,
+        const NUM_LEX_STATES: usize,
+        const NUM_PARSE_STATES: usize,
+        const NUM_RULES: usize,
+    >
+    Engine<
+        'a,
+        'b,
+        N,
+        S,
+        TERMINALS,
+        NUM_TOKENS,
+        NUM_LITERALS,
+        NUM_LEX_STATES,
+        NUM_PARSE_STATES,
+        NUM_RULES,
+    >
+{
     pub fn from_raw(
-        (actions, rule_lens): (Vec<Vec<(usize, usize)>>, Vec<(usize, usize)>),
-        dfa: (
-            Vec<(Vec<u64>, ())>,
-            Vec<[Option<usize>; 256]>,
-            Vec<Option<(usize, usize)>>,
+        (actions, rule_lens): (
+            [[(usize, usize); NUM_TOKENS]; NUM_PARSE_STATES],
+            [(usize, usize); NUM_RULES],
         ),
-        trie_raw: Vec<(Option<(usize, usize)>, [Option<usize>; 256])>,
-        lexeme_callbacks: Vec<Box<dyn Fn(&mut S, &str) -> N>>,
-        rule_callbacks: Vec<Box<dyn Fn(Vec<N>) -> N>>,
+        (trans, fin): (
+            [[Option<usize>; 256]; NUM_LEX_STATES],
+            [Option<(usize, usize)>; NUM_LEX_STATES],
+        ),
+        trie_raw: [(Option<(usize, usize)>, [Option<usize>; 256]); NUM_LITERALS],
+        lexeme_callbacks: [Box<dyn Fn(&mut S, &str) -> N>; TERMINALS],
+        rule_callbacks: [Box<dyn Fn(Vec<N>) -> N>; NUM_RULES],
         state: S,
         s: &'a mut &'b str,
     ) -> Result<Self, &'static str> {
         Ok(Self {
             parser: ParseTable::from_raw(actions, rule_lens)?,
             trie: Trie::from_raw(trie_raw),
-            dfa: RegexDFA::from_raw(dfa),
+            dfa: RegexTable { trans, fin },
             lexeme_callbacks,
             rule_callbacks,
             state,
