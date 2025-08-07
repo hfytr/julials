@@ -6,6 +6,7 @@ pub use lexer::{DynTrie, RegexDFA, Trie, TrieNode};
 pub use parser::{Conflict, DynParseTable, ParseAction, ParseTable};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
+use core::panic;
 use std::{fmt::Debug, mem::MaybeUninit};
 
 use crate::lexer::RegexTable;
@@ -24,7 +25,7 @@ const ERR_NODE_STACK_NOT_EMPTY: &'static str =
 const ERR_TERMINAL_GOTO: &'static str = "A terminal mapped to a goto action in the parse table.";
 const ERR_SYNTAX_ERR: &'static str = "Syntax error.";
 
-const MAX_STATE_STACK: usize = 1024;
+pub const MAX_STATE_STACK: usize = 1024;
 
 fn quote_option<T: ToTokens>(o: &Option<T>) -> TokenStream {
     if let Some(t) = o {
@@ -48,34 +49,38 @@ fn fmt_maybe_arr(f: &mut std::fmt::Formatter<'_>, a: &[Option<usize>; 256]) -> s
 
 pub struct CappedVec<const N: usize, T: Clone> {
     buf: [MaybeUninit<T>; N],
-    len: usize
+    len: usize,
 }
 
 impl<const N: usize, T: Debug + Clone> Debug for CappedVec<N, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
-            .entries(self.buf[..self.len].iter().map(|elem| unsafe { elem.assume_init_ref() }))
+            .entries(
+                self.buf[..self.len]
+                    .iter()
+                    .map(|elem| unsafe { elem.assume_init_ref() }),
+            )
             .finish()
     }
 }
 
 impl<const N: usize, T: Clone> CappedVec<N, T> {
-    fn new() -> Self {
-        let buf: [MaybeUninit<T>; N] = unsafe {
-            MaybeUninit::uninit().assume_init()
-        };
+    pub fn new() -> Self {
+        let buf: [MaybeUninit<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
         Self { buf, len: 0 }
     }
 
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
     }
 
-    fn last(&self) -> Option<&T> {
-        self.buf.get(self.len - 1).map(|t| unsafe { t.assume_init_ref() })
+    pub fn last(&self) -> Option<&T> {
+        self.buf
+            .get(self.len - 1)
+            .map(|t| unsafe { t.assume_init_ref() })
     }
 
-    fn pop(&mut self) -> Option<T> {
+    pub fn pop(&mut self) -> Option<T> {
         (self.len > 0).then(|| {
             let mut dest = MaybeUninit::uninit();
             self.len -= 1;
@@ -84,20 +89,10 @@ impl<const N: usize, T: Clone> CappedVec<N, T> {
         })
     }
 
-    fn split_off(&mut self, len: usize) -> Vec<T> {
-        let mut result = vec![];
-        for _ in 0..len {
-            if let Some(last) = self.pop() {
-                result.push(last)
-            } else {
-                return result
-            }
+    pub fn push(&mut self, t: T) {
+        if self.len == N {
+            panic!("CappedVec hit its limit.")
         }
-        result.reverse();
-        result
-    }
-
-    fn push(&mut self, t: T) {
         self.buf[self.len] = MaybeUninit::new(t);
         self.len += 1;
     }
@@ -119,8 +114,8 @@ pub struct Engine<
     trie: Trie<NUM_LITERALS>,
     dfa: RegexTable<NUM_LEX_STATES>,
     // TODO: make callbacks not return Box. probably require break out lexeme enum
-    lexeme_callbacks: [Box<dyn Fn(&mut S, &str) -> N>; TERMINALS],
-    rule_callbacks: [Box<dyn Fn(Vec<N>) -> N>; NUM_RULES],
+    lexeme_callbacks: [fn(&mut S, &str) -> N; TERMINALS],
+    rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
     state: S,
     done: bool,
     // for user dbg
@@ -164,8 +159,8 @@ impl<
             [Option<(usize, usize)>; NUM_LEX_STATES],
         ),
         trie_raw: [(Option<(usize, usize)>, [Option<usize>; 256]); NUM_LITERALS],
-        lexeme_callbacks: [Box<dyn Fn(&mut S, &str) -> N>; TERMINALS],
-        rule_callbacks: [Box<dyn Fn(Vec<N>) -> N>; NUM_RULES],
+        lexeme_callbacks: [fn(&mut S, &str) -> N; TERMINALS],
+        rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
         state: S,
         s: &'a mut &'b str,
     ) -> Result<Self, &'static str> {
@@ -201,8 +196,8 @@ impl<
                     for _ in 0..rule_len {
                         self.state_stack.pop().ok_or(ERR_STATE_STACK_EMPTY)?;
                     }
-                    let children = self.node_stack.split_off(rule_len);
-                    self.node_stack.push((self.rule_callbacks[rule])(children));
+                    let new_node = (self.rule_callbacks[rule])(&mut self.node_stack);
+                    self.node_stack.push(new_node);
                     if non_terminal == 0 {
                         if self.node_stack.len() != 1 {
                             return Result::Err(ERR_NODE_STACK_NOT_EMPTY);

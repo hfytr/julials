@@ -1,13 +1,14 @@
 mod lexer;
 
 use crate::lexer::{process_productions, Production, ProductionType};
-use proc_macro2::{Ident, Punct, Spacing, TokenStream};
-use quote::{quote, TokenStreamExt};
+use proc_macro2::{Ident, Punct, Spacing, Span, TokenStream};
+use quote::{quote, ToTokens, TokenStreamExt};
 use shared_structs::{DynParseTable, DynTrie, RegexDFA};
 use std::process::exit;
 use syn::{
     parse::{discouraged::Speculative, Parse},
-    Error, PathSegment, Token,
+    spanned::Spanned,
+    Error, ExprClosure, PathSegment, Token,
 };
 
 const ERR_STATE_NOT_SPECIFIED: &'static str =
@@ -161,30 +162,94 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         parser,
     } = syn::parse2(input)?;
 
-    let mut lexeme_callbacks_inner = TokenStream::new();
     let num_tokens = productions.len() + 2;
     let num_literals = trie.0.len();
     let num_lex_states = dfa.fin.len();
     let num_parse_states = parser.actions.len();
     let num_rules = parser.rule_lens.len();
-    let mut num_terminals: usize = 0;
-    lexeme_callbacks_inner.append_separated(
-        productions
-            .iter()
-            .filter(|production| !matches!(production.prod_type, ProductionType::Rule(_)))
-            .map(|production| {
-                num_terminals += 1;
-                if let ProductionType::Literal((_, ref callback)) = production.prod_type {
-                    quote! { Box::new(#callback) }
-                } else if let ProductionType::Regex((_, ref callback)) = production.prod_type {
-                    quote! { Box::new(#callback) }
-                } else {
-                    let prod_name = &production.name;
-                    quote! { Box::new(|_, _| #out_type::#prod_name(#prod_name::default())) }
+
+    let make_rule_callback = |maybe_user_callback: Option<&ExprClosure>,
+                              num_generated: usize,
+                              num_args: usize|
+     -> (TokenStream, Ident) {
+        let callback_name = Ident::new(&format!("__gen_{}", num_generated), Span::call_site());
+        let user_callback = maybe_user_callback
+            .map(|c| c.to_token_stream())
+            .unwrap_or_else(|| {
+                let mut closure_args = quote! { node_1 };
+                for _ in 0..(num_args - 1) {
+                    closure_args.append_all(quote! {, _});
                 }
-            }),
-        Punct::new(',', Spacing::Alone),
-    );
+                quote! { |#closure_args| node_1 }
+            });
+
+        let callback_args_rev = (0..num_args)
+            .map(|i| Ident::new(&format!("node_{}", num_args - i), user_callback.span()));
+        let stack_pops_iter = callback_args_rev
+            .clone()
+            .map(|s| quote! { let #s = node_stack.pop().unwrap(); });
+        let stack_pops = quote! { #(#stack_pops_iter)* };
+        let callback_args_iter = callback_args_rev.rev();
+        let callback_args = quote! { #(#callback_args_iter),* };
+        let cap = shared_structs::MAX_STATE_STACK;
+        let callback = quote! {
+            fn #callback_name(node_stack: &mut parser::CappedVec<#cap, #out_type>) -> #out_type {
+                #stack_pops
+                let user_callback = #user_callback;
+                user_callback(#callback_args)
+            }
+        };
+        (callback, callback_name)
+    };
+    let make_lexeme_callback =
+        |user_callback: &ExprClosure, num_generated: usize| -> (TokenStream, Ident) {
+            let callback_name = Ident::new(&format!("__gen_{}", num_generated), Span::call_site());
+            let callback = quote! {
+                fn #callback_name(state: &mut #state_type, s: &str) -> #out_type {
+                    let user_callback = #user_callback;
+                    user_callback(state, s)
+                }
+            };
+            (callback, callback_name)
+        };
+    // Start' -> Start
+    let (start_callback, start_callback_name) = make_rule_callback(None, 0, 1);
+    let mut lexeme_callback_defs = TokenStream::new();
+    let mut lexeme_callback_names = vec![];
+    let mut rule_callback_defs = start_callback;
+    let mut rule_callback_names = vec![start_callback_name];
+    let mut num_terminals = 0usize;
+    let mut num_generated = 1;
+    let mut cur_rule = 1;
+
+    for production in productions.iter() {
+        match &production.prod_type {
+            ProductionType::Literal(_, callback) | ProductionType::Regex(_, callback) => {
+                let (callback, callback_name) = make_lexeme_callback(callback, num_generated);
+                num_terminals += 1;
+                num_generated += 1;
+                lexeme_callback_defs.append_all(callback);
+                lexeme_callback_names.push(callback_name);
+            }
+            ProductionType::Rule(rules) => {
+                for (_, callback) in rules {
+                    let (callback, callback_name) = make_rule_callback(
+                        callback.as_ref(),
+                        num_generated,
+                        parser.rule_lens[cur_rule].0,
+                    );
+                    num_generated += 1;
+                    cur_rule += 1;
+                    rule_callback_defs.append_all(callback);
+                    rule_callback_names.push(callback_name);
+                }
+            }
+        }
+    }
+    let mut lexeme_callbacks = TokenStream::new();
+    lexeme_callbacks.append_separated(lexeme_callback_names, Punct::new(',', Spacing::Alone));
+    let mut rule_callbacks = TokenStream::new();
+    rule_callbacks.append_separated(rule_callback_names, Punct::new(',', Spacing::Alone));
 
     let mut rule_callbacks_inner = TokenStream::new();
     let default_rule_callback = quote! { Box::new(|mut children| children.swap_remove(0)) };
@@ -212,12 +277,14 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         fn create_parsing_engine<'a, 'b>(s: &'a mut &'b str) ->
             Result<parser::Engine<'a, 'b, #out_type, #state_type, #num_terminals, #num_tokens, #num_literals, #num_lex_states, #num_parse_states, #num_rules>, &'static str>
         {
+            #lexeme_callback_defs
+            #rule_callback_defs
             parser::Engine::from_raw(
                 #parser,
                 #dfa,
                 #trie,
-                [#lexeme_callbacks_inner],
-                [#rule_callbacks_inner],
+                [#lexeme_callbacks],
+                [#rule_callbacks],
                 #init_state,
                 s
             )

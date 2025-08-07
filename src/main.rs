@@ -55,28 +55,18 @@ impl Display for Node {
     }
 }
 
-fn expr_node(children: Vec<Node>) -> Node {
-    if let Result::Ok([term @ Node::Term(_), Node::Plus, mut expr @ Node::Expr(_)]) =
-        <[_; 3]>::try_from(children)
-        && let Node::Expr(ref mut components) = expr
-    {
-        components.push(Box::new(term));
-        expr
-    } else {
-        panic!();
+fn expr_node(term: Node, mut expr: Node) -> Node {
+    if let Node::Expr(ref mut terms) = expr {
+        terms.push(Box::new(term));
     }
+    expr
 }
 
-fn term_node(children: Vec<Node>) -> Node {
-    if let Result::Ok([factor, Node::Multiply, mut term @ Node::Term(_)]) =
-        <[_; 3]>::try_from(children)
-        && let Node::Term(ref mut components) = term
-    {
-        components.push(Box::new(factor));
-        term
-    } else {
-        panic!();
+fn term_node(factor: Node, mut term: Node) -> Node {
+    if let Node::Term(ref mut factors) = term {
+        factors.push(Box::new(factor));
     }
+    term
 }
 
 parser::parser! {
@@ -84,16 +74,16 @@ parser::parser! {
     State(Empty = Empty()),
     Output(Node),
     Expr => Rule(
-        Term Plus Expr |children| expr_node(children),
-        Term |mut children| Node::Expr(vec![Box::new(children.pop().unwrap())])
+        Term Plus Expr |term, _, expr| expr_node(term, expr),
+        Term |term| Node::Expr(vec![Box::new(term)])
     ),
     Term => Rule(
-        Factor Multiply Term |children| term_node(children),
-        Factor |mut children| Node::Term(vec![Box::new(children.pop().unwrap())])
+        Factor Multiply Term |factor, _, term| term_node(factor, term),
+        Factor |factor| Node::Term(vec![Box::new(factor)])
     ),
     Factor => Rule(
         Literal,
-        LeftParen Expr RightParen |mut children| children.swap_remove(1)
+        LeftParen Expr RightParen |_, expr, _| expr
     ),
     Literal => Regex("[0-9]*" |_, text: &str| {
         Node::Literal(text.parse().unwrap())

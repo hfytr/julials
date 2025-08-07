@@ -25,8 +25,8 @@ const ERR_NO_CALLBACK: &'static str =
     "ERROR: Literal | Regex require a callback to be specified after the pattern";
 
 pub enum ProductionType {
-    Regex((String, ExprClosure)),
-    Literal((String, ExprClosure)),
+    Regex(String, ExprClosure),
+    Literal(String, ExprClosure),
     Rule(Vec<(Vec<Ident>, Option<ExprClosure>)>),
 }
 
@@ -36,12 +36,12 @@ impl Debug for ProductionType {
             callback.as_ref().map(|c| c.to_token_stream().to_string())
         }
         match self {
-            ProductionType::Regex((patt, callback)) => write!(
+            ProductionType::Regex(patt, callback) => write!(
                 f,
                 "ProductionType::Regex {{\n\tpattern: {patt},\n\tcallback: {}",
                 callback.to_token_stream().to_string()
             )?,
-            ProductionType::Literal((patt, callback)) => write!(
+            ProductionType::Literal(patt, callback) => write!(
                 f,
                 "ProductionType::Literal {{\n\tpattern: {patt},\n\tcallback: {}",
                 callback.to_token_stream().to_string()
@@ -84,9 +84,9 @@ impl Parse for Production {
                 let patt: LitStr = content.parse().context(ERR_MISSING_PATT)?;
                 let callback = content.parse::<ExprClosure>().context(ERR_NO_CALLBACK)?;
                 if prod_type_str.as_str() == "Regex" {
-                    Ok(ProductionType::Regex((patt.value(), callback)))
+                    Ok(ProductionType::Regex(patt.value(), callback))
                 } else {
-                    Ok(ProductionType::Literal((patt.value(), callback)))
+                    Ok(ProductionType::Literal(patt.value(), callback))
                 }
             }
             "Rule" => {
@@ -136,11 +136,11 @@ pub fn process_productions(
         (vec![], BTreeMap::new(), 0),
         |(mut regexi, mut production_ids, mut lexeme_i), (production_i, production)| {
             match &production.prod_type {
-                ProductionType::Regex((patt, _)) => {
+                ProductionType::Regex(patt, _) => {
                     regexi.push((patt.as_str(), lexeme_i, production_ids.len() + 1));
                     lexeme_i += 1;
                 }
-                ProductionType::Literal((patt, _)) => {
+                ProductionType::Literal(patt, _) => {
                     trie.insert(patt.as_bytes(), (lexeme_i, production_ids.len() + 1));
                     lexeme_i += 1;
                 }
