@@ -50,7 +50,7 @@ extern crate proc_macro;
 ///       <RuleName> => Rule(<NodeInnerType>, <rule_1>, <rule_2>, ... )
 ///     where each rule is of the form: elem1 elem2 elem3 ... <optional-callback>
 ///     the optional callback is a closure of the form:
-///       |children: Vec<Box<Node>>| -> Node {...}
+///       |elem1: Node, elem2: Node, ...| -> Node {...}
 #[proc_macro]
 pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse(input).expect("Proc Macro errored parsing input.");
