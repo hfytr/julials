@@ -61,11 +61,10 @@ impl ParseTable {
         let dfa = ParseDFA::from_rules(rules, start);
         let mut conflicts = vec![];
         #[cfg(not(feature = "lr1"))]
-        let state_ids = {
+        let (state_ids, max_id) = {
             let mut state_ids = vec![usize::MAX; dfa.states.len()];
             let mut cur_id = usize::MAX;
             let mut last = &vec![];
-            dbg!(dfa.states.iter_set().collect::<Vec<_>>());
             for (state, _, i) in dfa.states.iter_set() {
                 let seed: &Vec<SeedRule> = &state.0;
                 if last != seed {
@@ -74,11 +73,11 @@ impl ParseTable {
                 }
                 state_ids[i] = cur_id
             }
-            state_ids
+            (state_ids, cur_id+1)
         };
         #[cfg(feature = "lr1")]
-        let state_ids: Vec<_> = (0..dfa.states.len()).collect();
-        let mut actions = vec![vec![ParseAction::Invalid; dfa.rules.len()]; state_ids.len()];
+        let (state_ids, max_id) = ((0..dfa.states.len()).collect::<Vec<_>>(), dfa.states.len());
+        let mut actions = vec![vec![ParseAction::Invalid; dfa.rules.len()]; max_id];
         let mut production_ids = vec![];
         let mut rule_lens = vec![];
         let mut i = 0;
