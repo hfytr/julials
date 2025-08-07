@@ -55,24 +55,24 @@ impl Display for Node {
     }
 }
 
-fn expr_node(children: Vec<Box<Node>>) -> Box<Node> {
-    if let Result::Ok([term @ box Node::Term(_), box Node::Plus, mut expr @ box Node::Expr(_)]) =
+fn expr_node(children: Vec<Node>) -> Node {
+    if let Result::Ok([term @ Node::Term(_), Node::Plus, mut expr @ Node::Expr(_)]) =
         <[_; 3]>::try_from(children)
-        && let box Node::Expr(ref mut components) = expr
+        && let Node::Expr(ref mut components) = expr
     {
-        components.push(term);
+        components.push(Box::new(term));
         expr
     } else {
         panic!();
     }
 }
 
-fn term_node(children: Vec<Box<Node>>) -> Box<Node> {
-    if let Result::Ok([factor, box Node::Multiply, mut term @ box Node::Term(_)]) =
+fn term_node(children: Vec<Node>) -> Node {
+    if let Result::Ok([factor, Node::Multiply, mut term @ Node::Term(_)]) =
         <[_; 3]>::try_from(children)
-        && let box Node::Term(ref mut components) = term
+        && let Node::Term(ref mut components) = term
     {
-        components.push(factor);
+        components.push(Box::new(factor));
         term
     } else {
         panic!();
@@ -85,23 +85,23 @@ parser::parser! {
     Output(Node),
     Expr => Rule(
         Term Plus Expr |children| expr_node(children),
-        Term |mut children| Box::new(Node::Expr(vec![children.pop().unwrap()]))
+        Term |mut children| Node::Expr(vec![Box::new(children.pop().unwrap())])
     ),
     Term => Rule(
         Factor Multiply Term |children| term_node(children),
-        Factor |mut children| Box::new(Node::Term(vec![children.pop().unwrap()]))
+        Factor |mut children| Node::Term(vec![Box::new(children.pop().unwrap())])
     ),
     Factor => Rule(
         Literal,
         LeftParen Expr RightParen |mut children| children.swap_remove(1)
     ),
     Literal => Regex("[0-9]*" |_, text: &str| {
-        Box::new(Node::Literal(text.parse().unwrap()))
+        Node::Literal(text.parse().unwrap())
     }),
-    Multiply => Literal("*" |_, _| Box::new(Node::Multiply)),
-    Plus => Literal("+" |_, _| Box::new(Node::Plus)),
-    LeftParen => Literal("(" |_, _| Box::new(Node::LeftParen)),
-    RightParen => Literal(")" |_, _| Box::new(Node::RightParen)),
+    Multiply => Literal("*" |_, _| Node::Multiply),
+    Plus => Literal("+" |_, _| Node::Plus),
+    LeftParen => Literal("(" |_, _| Node::LeftParen),
+    RightParen => Literal(")" |_, _| Node::RightParen),
 }
 
 fn main() {

@@ -48,14 +48,14 @@ pub struct Engine<'a, 'b, N, S> {
     trie: Trie,
     dfa: RegexDFA,
     // TODO: make callbacks not return Box. probably require break out lexeme enum
-    lexeme_callbacks: Vec<Box<dyn Fn(&mut S, &str) -> Box<N>>>,
-    rule_callbacks: Vec<Box<dyn Fn(Vec<Box<N>>) -> Box<N>>>,
+    lexeme_callbacks: Vec<Box<dyn Fn(&mut S, &str) -> N>>,
+    rule_callbacks: Vec<Box<dyn Fn(Vec<N>) -> N>>,
     state: S,
     done: bool,
     // for user dbg
     pub s: &'a mut &'b str,
     pub state_stack: Vec<usize>,
-    pub node_stack: Vec<Box<N>>,
+    pub node_stack: Vec<N>,
 }
 
 impl<N: Debug, S: Debug> Debug for Engine<'_, '_, N, S> {
@@ -83,8 +83,8 @@ impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
             Vec<Option<(usize, usize)>>,
         ),
         trie_raw: Vec<(Option<(usize, usize)>, [Option<usize>; 256])>,
-        lexeme_callbacks: Vec<Box<dyn Fn(&mut S, &str) -> Box<N>>>,
-        rule_callbacks: Vec<Box<dyn Fn(Vec<Box<N>>) -> Box<N>>>,
+        lexeme_callbacks: Vec<Box<dyn Fn(&mut S, &str) -> N>>,
+        rule_callbacks: Vec<Box<dyn Fn(Vec<N>) -> N>>,
         state: S,
         s: &'a mut &'b str,
     ) -> Result<Self, &'static str> {
@@ -102,7 +102,7 @@ impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
         })
     }
 
-    pub fn parse(&mut self) -> Result<Box<N>, &'static str> {
+    pub fn parse(&mut self) -> Result<N, &'static str> {
         let mut cur_lexeme = self.lex();
         while let Ok((_, lexeme_id)) = cur_lexeme.as_ref() {
             match self.parser.actions[*self.state_stack.last().unwrap()][*lexeme_id] {
@@ -153,7 +153,7 @@ impl<'a, 'b, N: Debug, S> Engine<'a, 'b, N, S> {
         Err(cur_lexeme.unwrap_err())
     }
 
-    pub fn lex(&mut self) -> Result<(Option<Box<N>>, usize), &'static str> {
+    pub fn lex(&mut self) -> Result<(Option<N>, usize), &'static str> {
         if self.s.is_empty() && !self.done {
             self.done = true;
             return Ok((None, self.parser.actions[0].len() - 1));
