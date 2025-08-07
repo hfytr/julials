@@ -6,7 +6,7 @@ pub use lexer::{DynTrie, RegexDFA, Trie, TrieNode};
 pub use parser::{Conflict, DynParseTable, ParseAction, ParseTable};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use std::fmt::Debug;
+use std::{fmt::Debug, mem::MaybeUninit};
 
 use crate::lexer::RegexTable;
 
@@ -19,11 +19,12 @@ const ERR_EXTRA_TOKENS: &'static str =
 const ERR_STATE_STACK_EMPTY: &'static str = "Attempted to pop from an empty state stack.";
 const ERR_STATE_STACK_NOT_EMPTY: &'static str =
     "The state stack was not empty when returning start rule.";
-const ERR_NODE_STACK_EMPTY: &'static str = "Attempted to pop from an empty node stack.";
 const ERR_NODE_STACK_NOT_EMPTY: &'static str =
     "The node stack was not empty when returning start rule.";
 const ERR_TERMINAL_GOTO: &'static str = "A terminal mapped to a goto action in the parse table.";
 const ERR_SYNTAX_ERR: &'static str = "Syntax error.";
+
+const MAX_STATE_STACK: usize = 1024;
 
 fn quote_option<T: ToTokens>(o: &Option<T>) -> TokenStream {
     if let Some(t) = o {
@@ -45,10 +46,67 @@ fn fmt_maybe_arr(f: &mut std::fmt::Formatter<'_>, a: &[Option<usize>; 256]) -> s
     f.write_str("]")
 }
 
+pub struct CappedVec<const N: usize, T: Clone> {
+    buf: [MaybeUninit<T>; N],
+    len: usize
+}
+
+impl<const N: usize, T: Debug + Clone> Debug for CappedVec<N, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.buf[..self.len].iter().map(|elem| unsafe { elem.assume_init_ref() }))
+            .finish()
+    }
+}
+
+impl<const N: usize, T: Clone> CappedVec<N, T> {
+    fn new() -> Self {
+        let buf: [MaybeUninit<T>; N] = unsafe {
+            MaybeUninit::uninit().assume_init()
+        };
+        Self { buf, len: 0 }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn last(&self) -> Option<&T> {
+        self.buf.get(self.len - 1).map(|t| unsafe { t.assume_init_ref() })
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        (self.len > 0).then(|| {
+            let mut dest = MaybeUninit::uninit();
+            self.len -= 1;
+            std::mem::swap(&mut self.buf[self.len], &mut dest);
+            unsafe { dest.assume_init() }
+        })
+    }
+
+    fn split_off(&mut self, len: usize) -> Vec<T> {
+        let mut result = vec![];
+        for _ in 0..len {
+            if let Some(last) = self.pop() {
+                result.push(last)
+            } else {
+                return result
+            }
+        }
+        result.reverse();
+        result
+    }
+
+    fn push(&mut self, t: T) {
+        self.buf[self.len] = MaybeUninit::new(t);
+        self.len += 1;
+    }
+}
+
 pub struct Engine<
     'a,
     'b,
-    N,
+    N: Clone,
     S,
     const TERMINALS: usize,
     const NUM_TOKENS: usize,
@@ -67,14 +125,14 @@ pub struct Engine<
     done: bool,
     // for user dbg
     pub s: &'a mut &'b str,
-    pub state_stack: Vec<usize>,
-    pub node_stack: Vec<N>,
+    pub state_stack: CappedVec<MAX_STATE_STACK, usize>,
+    pub node_stack: CappedVec<MAX_STATE_STACK, N>,
 }
 
 impl<
         'a,
         'b,
-        N: Debug,
+        N: Debug + Clone,
         S: Debug,
         const TERMINALS: usize,
         const NUM_TOKENS: usize,
@@ -111,6 +169,8 @@ impl<
         state: S,
         s: &'a mut &'b str,
     ) -> Result<Self, &'static str> {
+        let mut state_stack = CappedVec::new();
+        state_stack.push(0);
         Ok(Self {
             parser: ParseTable::from_raw(actions, rule_lens)?,
             trie: Trie::from_raw(trie_raw),
@@ -120,8 +180,8 @@ impl<
             state,
             done: false,
             s,
-            node_stack: vec![],
-            state_stack: vec![0],
+            node_stack: CappedVec::new(),
+            state_stack,
         })
     }
 
@@ -141,12 +201,7 @@ impl<
                     for _ in 0..rule_len {
                         self.state_stack.pop().ok_or(ERR_STATE_STACK_EMPTY)?;
                     }
-                    let children = self.node_stack.split_off(
-                        self.node_stack
-                            .len()
-                            .checked_sub(rule_len)
-                            .ok_or(ERR_NODE_STACK_EMPTY)?,
-                    );
+                    let children = self.node_stack.split_off(rule_len);
                     self.node_stack.push((self.rule_callbacks[rule])(children));
                     if non_terminal == 0 {
                         if self.node_stack.len() != 1 {

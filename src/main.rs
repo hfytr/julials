@@ -5,7 +5,7 @@ use std::fmt::Display;
 #[derive(Default, Debug)]
 struct Empty();
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Node {
     Expr(Vec<Box<Node>>),
     Term(Vec<Box<Node>>),
