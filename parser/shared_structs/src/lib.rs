@@ -2,11 +2,11 @@ mod lexer;
 mod parser;
 mod sets;
 
+use core::panic;
 pub use lexer::{DynTrie, RegexDFA, Trie, TrieNode};
 pub use parser::{Conflict, DynParseTable, ParseAction, ParseTable};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use core::panic;
 use std::{fmt::Debug, mem::MaybeUninit};
 
 use crate::lexer::RegexTable;
@@ -124,16 +124,7 @@ impl<
         const NUM_PARSE_STATES: usize,
         const NUM_RULES: usize,
     >
-    Engine<
-        N,
-        S,
-        TERMINALS,
-        NUM_TOKENS,
-        NUM_LITERALS,
-        NUM_LEX_STATES,
-        NUM_PARSE_STATES,
-        NUM_RULES,
-    >
+    Engine<N, S, TERMINALS, NUM_TOKENS, NUM_LITERALS, NUM_LEX_STATES, NUM_PARSE_STATES, NUM_RULES>
 {
     pub fn from_raw(
         (actions, rule_lens): (
@@ -164,7 +155,7 @@ impl<
         let mut state_stack: CappedVec<MAX_STATE_STACK, usize> = CappedVec::new();
         state_stack.push(node);
         let mut node_stack = CappedVec::new();
-        while let Ok((lexeme, lexeme_id)) = cur_lexeme.as_ref() && (lexeme.is_some() || node_stack.len() > 1) {
+        while let Ok((lexeme, lexeme_id)) = cur_lexeme.as_ref() {
             match self.parser.actions[*state_stack.last().unwrap()][*lexeme_id] {
                 ParseAction::Shift(state) => {
                     state_stack.push(state);
@@ -186,7 +177,7 @@ impl<
                         {
                             state
                         } else if non_terminal == node && lexeme.is_none() {
-                            break
+                            break;
                         } else {
                             return Result::Err(ERR_REDUCED_NONTERMINAL_INVALID);
                         },

@@ -287,13 +287,21 @@ fn get_derived_lookaheads(
 impl ParseDFA {
     fn from_rules(rules: Vec<Vec<Vec<usize>>>) -> Self {
         let firsts = get_firsts(&rules);
-        let mut stack = (0..rules.len()).filter(|i| !rules[*i].is_empty()).collect::<Vec<_>>();
-        let states_vec = stack.iter().map(|i|
-            ((
-                (0..rules[*i].len()).map(|j| (*i, j, 0)).collect::<Vec<_>>(),
-                vec![firsts.last().unwrap().clone(); rules[*i].len()]
-            ), vec![])
-            ).collect::<Vec<_>>();
+        let mut stack = (0..rules.len())
+            .filter(|i| !rules[*i].is_empty())
+            .collect::<Vec<_>>();
+        let states_vec = stack
+            .iter()
+            .map(|i| {
+                (
+                    (
+                        (0..rules[*i].len()).map(|j| (*i, j, 0)).collect::<Vec<_>>(),
+                        vec![firsts.last().unwrap().clone(); rules[*i].len()],
+                    ),
+                    vec![],
+                )
+            })
+            .collect::<Vec<_>>();
         let mut states = IndexableMap::from(states_vec);
         let derived_rules = (0..rules.len())
             .map(|i| get_derived_rules(&rules, i))

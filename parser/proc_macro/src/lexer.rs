@@ -124,9 +124,7 @@ impl Parse for Production {
     }
 }
 
-pub fn process_productions(
-    productions: &Vec<Production>,
-) -> (RegexDFA, DynTrie, DynParseTable) {
+pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie, DynParseTable) {
     let mut trie = DynTrie(vec![TrieNode {
         fin: None,
         children: [None; 256],
