@@ -98,7 +98,7 @@ impl<const N: usize, T: Clone> CappedVec<N, T> {
 pub struct Engine<
     N: Clone,
     S,
-    const TERMINALS: usize,
+    const NUM_TERMINALS: usize,
     const NUM_TOKENS: usize,
     const NUM_LITERALS: usize,
     const NUM_LEX_STATES: usize,
@@ -108,23 +108,23 @@ pub struct Engine<
     pub parser: ParseTable<NUM_RULES, NUM_PARSE_STATES, NUM_TOKENS>,
     trie: Trie<NUM_LITERALS>,
     dfa: RegexTable<NUM_LEX_STATES>,
-    // TODO: make callbacks not return Box. probably require break out lexeme enum
-    lexeme_callbacks: [fn(&mut S, &str) -> N; TERMINALS],
+    lexeme_callbacks: [fn(&mut S, &str) -> N; NUM_TERMINALS],
     rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
+    is_terminal: [bool; NUM_TOKENS],
     state: S,
 }
 
 impl<
         N: Debug + Clone,
         S: Debug,
-        const TERMINALS: usize,
+        const NUM_TERMINALS: usize,
         const NUM_TOKENS: usize,
         const NUM_LITERALS: usize,
         const NUM_LEX_STATES: usize,
         const NUM_PARSE_STATES: usize,
         const NUM_RULES: usize,
     >
-    Engine<N, S, TERMINALS, NUM_TOKENS, NUM_LITERALS, NUM_LEX_STATES, NUM_PARSE_STATES, NUM_RULES>
+    Engine<N, S, NUM_TERMINALS, NUM_TOKENS, NUM_LITERALS, NUM_LEX_STATES, NUM_PARSE_STATES, NUM_RULES>
 {
     pub fn from_raw(
         (actions, rule_lens): (
@@ -136,8 +136,9 @@ impl<
             [Option<(usize, usize)>; NUM_LEX_STATES],
         ),
         trie_raw: [(Option<(usize, usize)>, [Option<usize>; 256]); NUM_LITERALS],
-        lexeme_callbacks: [fn(&mut S, &str) -> N; TERMINALS],
+        lexeme_callbacks: [fn(&mut S, &str) -> N; NUM_TERMINALS],
         rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
+        is_terminal: [bool; NUM_TOKENS],
         state: S,
     ) -> Result<Self, &'static str> {
         Ok(Self {
@@ -146,12 +147,18 @@ impl<
             dfa: RegexTable { trans, fin },
             lexeme_callbacks,
             rule_callbacks,
+            is_terminal,
             state,
         })
     }
 
     pub fn parse(&mut self, node: usize, mut s: &str) -> Result<N, &'static str> {
         let mut cur_lexeme = self.lex(&mut s);
+        if self.is_terminal[node] && let Ok((Some(_), lexeme_id)) = cur_lexeme.as_ref() && node == *lexeme_id {
+            return Ok(cur_lexeme.unwrap().0.unwrap());
+        } else if self.is_terminal[node] {
+            return Err(ERR_SYNTAX_ERR)
+        }
         let mut state_stack: CappedVec<MAX_STATE_STACK, usize> = CappedVec::new();
         state_stack.push(node);
         let mut node_stack = CappedVec::new();

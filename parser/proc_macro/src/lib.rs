@@ -150,6 +150,9 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
     let num_lex_states = dfa.fin.len();
     let num_parse_states = parser.actions.len();
     let num_rules = parser.rule_lens.len();
+    let mut is_token = TokenStream::new();
+    is_token.append_separated(productions.iter().map(|p| !matches!(p.prod_type, ProductionType::Rule(_))), Punct::new(',', Spacing::Alone));
+    is_token.append_all(quote! { , true });
 
     let make_rule_callback = |maybe_user_callback: Option<&ExprClosure>,
                               num_generated: usize,
@@ -254,6 +257,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         }),
         Punct::new(',', Spacing::Alone),
     );
+
     Ok(quote! {
         fn create_parsing_engine() ->
             Result<parser::Engine<#out_type, #state_type, #num_terminals, #num_tokens, #num_literals, #num_lex_states, #num_parse_states, #num_rules>, &'static str>
@@ -266,6 +270,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                 #trie,
                 [#lexeme_callbacks],
                 [#rule_callbacks],
+                [#is_token],
                 #init_state,
             )
         }
