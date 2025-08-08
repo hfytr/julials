@@ -70,7 +70,6 @@ fn term_node(factor: Node, mut term: Node) -> Node {
 }
 
 parser::parser! {
-    Start(Expr),
     State(Empty = Empty()),
     Output(Node),
     Expr => Rule(
@@ -95,10 +94,9 @@ parser::parser! {
 }
 
 fn main() {
-    let s = String::from("1*7+(5+8)*(6+3*(5+7)+1)");
-    let mut slice = s.as_str();
-    let mut engine = create_parsing_engine(&mut slice).unwrap();
-    let expr = engine.parse();
+    let s = String::from("1*7*(5+7)");
+    let mut engine = create_parsing_engine().unwrap();
+    let expr = engine.parse(1, &s);
     let expr = expr.unwrap();
     dbg!(&expr);
     dbg!(expr.eval());

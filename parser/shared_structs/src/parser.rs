@@ -85,23 +85,20 @@ pub enum Conflict {
 }
 
 impl DynParseTable {
-    pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, start: usize) -> Result<Self, Vec<Conflict>> {
-        let dfa = ParseDFA::from_rules(rules, start);
+    pub fn from_rules(rules: Vec<Vec<Vec<usize>>>) -> Result<Self, Vec<Conflict>> {
+        let dfa = ParseDFA::from_rules(rules);
         let mut conflicts = vec![];
         #[cfg(not(feature = "lr1"))]
         let (state_ids, max_id) = {
+            let mut found_seeds = std::collections::BTreeMap::<&Vec<SeedRule>, usize>::new();
             let mut state_ids = vec![usize::MAX; dfa.states.len()];
-            let mut cur_id = usize::MAX;
-            let mut last = &vec![];
-            for (state, _, i) in dfa.states.iter_set() {
-                let seed: &Vec<SeedRule> = &state.0;
-                if last != seed {
-                    last = seed;
-                    cur_id = cur_id.wrapping_add(1);
-                }
-                state_ids[i] = cur_id
+            for (i, (state, _)) in dfa.states.iter().enumerate() {
+                state_ids[i] = found_seeds.get(&state.0).map(|i| *i).unwrap_or_else(|| {
+                    found_seeds.insert(&state.0, found_seeds.len());
+                    found_seeds.len() - 1
+                });
             }
-            (state_ids, cur_id + 1)
+            (state_ids, found_seeds.len())
         };
         #[cfg(feature = "lr1")]
         let (state_ids, max_id) = ((0..dfa.states.len()).collect::<Vec<_>>(), dfa.states.len());
@@ -288,14 +285,16 @@ fn get_derived_lookaheads(
 }
 
 impl ParseDFA {
-    fn from_rules(mut rules: Vec<Vec<Vec<usize>>>, start: usize) -> Self {
-        rules[0] = vec![vec![start]];
+    fn from_rules(rules: Vec<Vec<Vec<usize>>>) -> Self {
         let firsts = get_firsts(&rules);
-        let mut states = IndexableMap::from([(
-            (vec![(0, 0, 0)], vec![firsts.last().unwrap().clone()]),
-            vec![],
-        )]);
-        let mut stack = vec![0];
+        let mut stack = (0..rules.len()).filter(|i| !rules[*i].is_empty()).collect::<Vec<_>>();
+        let states_vec = stack.iter().map(|i|
+            ((
+                (0..rules[*i].len()).map(|j| (*i, j, 0)).collect::<Vec<_>>(),
+                vec![firsts.last().unwrap().clone(); rules[*i].len()]
+            ), vec![])
+            ).collect::<Vec<_>>();
+        let mut states = IndexableMap::from(states_vec);
         let derived_rules = (0..rules.len())
             .map(|i| get_derived_rules(&rules, i))
             .collect::<Vec<_>>();

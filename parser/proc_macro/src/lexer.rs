@@ -126,7 +126,6 @@ impl Parse for Production {
 
 pub fn process_productions(
     productions: &Vec<Production>,
-    start_prod: &String,
 ) -> (RegexDFA, DynTrie, DynParseTable) {
     let mut trie = DynTrie(vec![TrieNode {
         fin: None,
@@ -137,25 +136,22 @@ pub fn process_productions(
         |(mut regexi, mut production_ids, mut lexeme_i), (production_i, production)| {
             match &production.prod_type {
                 ProductionType::Regex(patt, _) => {
-                    regexi.push((patt.as_str(), lexeme_i, production_ids.len() + 1));
+                    regexi.push((patt.as_str(), lexeme_i, production_ids.len()));
                     lexeme_i += 1;
                 }
                 ProductionType::Literal(patt, _) => {
-                    trie.insert(patt.as_bytes(), (lexeme_i, production_ids.len() + 1));
+                    trie.insert(patt.as_bytes(), (lexeme_i, production_ids.len()));
                     lexeme_i += 1;
                 }
                 ProductionType::Rule(_) => {}
             }
-            production_ids.insert(&production.name_raw, production_i + 1);
+            production_ids.insert(&production.name_raw, production_i);
             (regexi, production_ids, lexeme_i)
         },
     );
     let mut any_errors = false;
-    let start_prod = production_ids
-        .get(start_prod)
-        .expect(crate::ERR_NO_START_PROD);
-    // there are 2 augmentations: rules[0] = start' -> start, and rules.last is eof
-    let mut rules: Vec<Vec<Vec<usize>>> = vec![vec![]; production_ids.len() + 2];
+    // augment with eof token
+    let mut rules: Vec<Vec<Vec<usize>>> = vec![vec![]; production_ids.len() + 1];
     for (raw_components, rule_name) in productions
         .iter()
         .filter_map(|prod| match &prod.prod_type {
@@ -191,7 +187,7 @@ pub fn process_productions(
             item_name, productions[node].name
         )
     };
-    let parser = match DynParseTable::from_rules(rules, *start_prod) {
+    let parser = match DynParseTable::from_rules(rules) {
         Err(conflicts) => {
             for conflict in conflicts {
                 match conflict {

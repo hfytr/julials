@@ -171,12 +171,6 @@ where
         self.map.get(x).map(|x| *x)
     }
 
-    pub fn iter_set(&self) -> impl Iterator<Item = (&Rc<T>, &U, usize)> {
-        self.map
-            .iter()
-            .map(|(_, i)| (&self.vec[*i].0, &self.vec[*i].1, *i))
-    }
-
     pub fn iter(&self) -> impl Iterator<Item = &(Rc<T>, U)> {
         self.vec.iter()
     }

@@ -14,15 +14,11 @@ use syn::{
 const ERR_STATE_NOT_SPECIFIED: &'static str =
     "ERROR: You must specify the lexer state with State(...)";
 const ERR_MISSING_ELEM: &'static str =
-    "ERROR: Expected State | Start | <Rule-Name> at beginning of element.";
+    "ERROR: Expected State | <Rule-Name> at beginning of element.";
 const ERR_MISSING_STATE_TYPE: &'static str =
     "ERROR: Expected parenthesized lexer state type after State element.";
 const ERR_MISSING_INIT_STATE: &'static str =
     "ERROR: Expected initial lexer state after = in State element.";
-const ERR_MISSING_START_PROD: &'static str =
-    "ERROR: Expected parenthesized production name after Start element.";
-const ERR_NO_START_PROD: &'static str =
-    "ERROR: You must specify the starting state with Start(...)";
 const ERR_MISSING_OUT_TYPE: &'static str =
     "ERROR: Expected parenthesized output type after Output element.";
 const ERR_NO_OUT_TYPE: &'static str = "ERROR: You must specify the output type with Output(...)";
@@ -33,8 +29,6 @@ extern crate proc_macro;
 /// The parser macro takes comma separated arguments of three types:
 /// - State: This argument must only be passed once. It is of the form State(<StateTypeName>),
 ///   and specifies the state which will be maintained during the lexing stage of your parser
-/// - Start: This argument must only passed once. It is of the form Start(<ElementName>) and
-///   must specify an element of your language previously / later defined.
 /// - Elements: This argument must appear at least once. It specifies the various elements of
 ///   your language, and takes three sub-forms:
 ///   - Regex: Specifies a regex defined lexeme within your language. It must be of the form:
@@ -87,13 +81,12 @@ struct MacroBody {
 impl Parse for MacroBody {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut state = None;
-        let mut start_prod = None;
         let mut productions: Vec<Production> = vec![];
         let mut out_type = None;
         while !input.is_empty() {
             let fork = input.fork();
             if let Result::Ok(ident) = fork.parse::<Ident>()
-                && ["State", "Start", "Output"].contains(&ident.to_string().as_str())
+                && ["State", "Output"].contains(&ident.to_string().as_str())
             {
                 input.advance_to(&fork);
                 let ident_str = ident.to_string();
@@ -106,15 +99,6 @@ impl Parse for MacroBody {
                         .context(ERR_MISSING_INIT_STATE)?;
                     let init_state = content.parse().context(ERR_MISSING_INIT_STATE)?;
                     state = Some((init_state, state_type));
-                } else if ident_str == "Start" {
-                    let content;
-                    syn::parenthesized!(content in input);
-                    start_prod = Some(
-                        content
-                            .parse::<Ident>()
-                            .context(ERR_MISSING_START_PROD)?
-                            .to_string(),
-                    );
                 } else if ident_str == "Output" {
                     let content;
                     syn::parenthesized!(content in input);
@@ -136,9 +120,8 @@ impl Parse for MacroBody {
         let tot_span = input.span();
         let (init_state, state_type) =
             state.ok_or(Error::new(tot_span, ERR_STATE_NOT_SPECIFIED))?;
-        let start_prod = start_prod.ok_or(Error::new(tot_span, ERR_NO_START_PROD))?;
         let out_type = out_type.ok_or(Error::new(tot_span, ERR_NO_OUT_TYPE))?;
-        let (dfa, trie, parser) = process_productions(&productions, &start_prod);
+        let (dfa, trie, parser) = process_productions(&productions);
         Ok(Self {
             dfa,
             trie,
@@ -162,7 +145,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         parser,
     } = syn::parse2(input)?;
 
-    let num_tokens = productions.len() + 2;
+    let num_tokens = productions.len() + 1;
     let num_literals = trie.0.len();
     let num_lex_states = dfa.fin.len();
     let num_parse_states = parser.actions.len();
@@ -212,15 +195,13 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
             };
             (callback, callback_name)
         };
-    // Start' -> Start
-    let (start_callback, start_callback_name) = make_rule_callback(None, 0, 1);
     let mut lexeme_callback_defs = TokenStream::new();
     let mut lexeme_callback_names = vec![];
-    let mut rule_callback_defs = start_callback;
-    let mut rule_callback_names = vec![start_callback_name];
+    let mut rule_callback_defs = TokenStream::new();
+    let mut rule_callback_names = vec![];
     let mut num_terminals = 0usize;
-    let mut num_generated = 1;
-    let mut cur_rule = 1;
+    let mut num_generated = 0;
+    let mut cur_rule = 0;
 
     for production in productions.iter() {
         match &production.prod_type {
@@ -274,8 +255,8 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         Punct::new(',', Spacing::Alone),
     );
     Ok(quote! {
-        fn create_parsing_engine<'a, 'b>(s: &'a mut &'b str) ->
-            Result<parser::Engine<'a, 'b, #out_type, #state_type, #num_terminals, #num_tokens, #num_literals, #num_lex_states, #num_parse_states, #num_rules>, &'static str>
+        fn create_parsing_engine() ->
+            Result<parser::Engine<#out_type, #state_type, #num_terminals, #num_tokens, #num_literals, #num_lex_states, #num_parse_states, #num_rules>, &'static str>
         {
             #lexeme_callback_defs
             #rule_callback_defs
@@ -286,7 +267,6 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                 [#lexeme_callbacks],
                 [#rule_callbacks],
                 #init_state,
-                s
             )
         }
     })
