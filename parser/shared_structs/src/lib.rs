@@ -7,7 +7,7 @@ pub use lexer::{DynTrie, RegexDFA, Trie, TrieNode};
 pub use parser::{Conflict, DynParseTable, ParseAction, ParseTable};
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use std::{fmt::Debug, mem::MaybeUninit};
+use std::{fmt::Debug, marker::PhantomData, mem::MaybeUninit};
 
 use crate::lexer::RegexTable;
 
@@ -111,7 +111,7 @@ pub struct Engine<
     lexeme_callbacks: [fn(&mut S, &str) -> N; NUM_TERMINALS],
     rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
     is_terminal: [bool; NUM_TOKENS],
-    state: S,
+    phantom_lex_state: PhantomData<S>
 }
 
 impl<
@@ -139,7 +139,6 @@ impl<
         lexeme_callbacks: [fn(&mut S, &str) -> N; NUM_TERMINALS],
         rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
         is_terminal: [bool; NUM_TOKENS],
-        state: S,
     ) -> Result<Self, &'static str> {
         Ok(Self {
             parser: ParseTable::from_raw(actions, rule_lens)?,
@@ -148,12 +147,12 @@ impl<
             lexeme_callbacks,
             rule_callbacks,
             is_terminal,
-            state,
+            phantom_lex_state: PhantomData,
         })
     }
 
-    pub fn parse(&mut self, node: usize, mut s: &str) -> Result<N, &'static str> {
-        let mut cur_lexeme = self.lex(&mut s);
+    pub fn parse(&mut self, node: usize, mut s: &str, mut lex_state: S) -> Result<N, &'static str> {
+        let mut cur_lexeme = self.lex(&mut s, &mut lex_state);
         if self.is_terminal[node] && let Ok((Some(_), lexeme_id)) = cur_lexeme.as_ref() && node == *lexeme_id {
             return Ok(cur_lexeme.unwrap().0.unwrap());
         } else if self.is_terminal[node] {
@@ -169,7 +168,7 @@ impl<
                     if let Ok((Some(lexeme), _)) = cur_lexeme {
                         node_stack.push(lexeme);
                     }
-                    cur_lexeme = self.lex(&mut s);
+                    cur_lexeme = self.lex(&mut s, &mut lex_state);
                 }
                 ParseAction::Reduce(rule) => {
                     let (rule_len, non_terminal) = self.parser.rule_lens[rule];
@@ -204,7 +203,7 @@ impl<
         }
     }
 
-    fn lex(&mut self, s: &mut &str) -> Result<(Option<N>, usize), &'static str> {
+    fn lex(&mut self, s: &mut &str, state: &mut S) -> Result<(Option<N>, usize), &'static str> {
         if s.is_empty() {
             return Ok((None, self.parser.actions[0].len() - 1));
         }
@@ -238,7 +237,7 @@ impl<
                 .or(trie_match.map(|m| (trie_len, m)))
         }
         .ok_or(ERR_INVALID_LEXEME)?;
-        let lexeme = (self.lexeme_callbacks[lexeme_id])(&mut self.state, &s[0..len]);
+        let lexeme = (self.lexeme_callbacks[lexeme_id])(state, &s[0..len]);
         *s = &s[len..];
         Ok((Some(lexeme), node_id))
     }

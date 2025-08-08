@@ -74,7 +74,6 @@ struct MacroBody {
     out_type: PathSegment,
     productions: Vec<Production>,
     state_type: syn::Ident,
-    init_state: syn::Expr,
     parser: DynParseTable,
 }
 
@@ -94,11 +93,7 @@ impl Parse for MacroBody {
                     let content;
                     syn::parenthesized!(content in input);
                     let state_type = content.parse().context(ERR_MISSING_STATE_TYPE)?;
-                    content
-                        .parse::<Token![=]>()
-                        .context(ERR_MISSING_INIT_STATE)?;
-                    let init_state = content.parse().context(ERR_MISSING_INIT_STATE)?;
-                    state = Some((init_state, state_type));
+                    state = Some(state_type);
                 } else if ident_str == "Output" {
                     let content;
                     syn::parenthesized!(content in input);
@@ -118,8 +113,7 @@ impl Parse for MacroBody {
             }
         }
         let tot_span = input.span();
-        let (init_state, state_type) =
-            state.ok_or(Error::new(tot_span, ERR_STATE_NOT_SPECIFIED))?;
+        let state_type = state.ok_or(Error::new(tot_span, ERR_STATE_NOT_SPECIFIED))?;
         let out_type = out_type.ok_or(Error::new(tot_span, ERR_NO_OUT_TYPE))?;
         let (dfa, trie, parser) = process_productions(&productions);
         Ok(Self {
@@ -127,7 +121,6 @@ impl Parse for MacroBody {
             trie,
             out_type,
             state_type,
-            init_state,
             productions,
             parser,
         })
@@ -141,7 +134,6 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         out_type,
         productions,
         state_type,
-        init_state,
         parser,
     } = syn::parse2(input)?;
 
@@ -271,7 +263,6 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                 [#lexeme_callbacks],
                 [#rule_callbacks],
                 [#is_token],
-                #init_state,
             )
         }
     })
