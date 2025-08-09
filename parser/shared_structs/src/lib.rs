@@ -101,50 +101,80 @@ pub struct Engine<
     const NUM_TERMINALS: usize,
     const NUM_TOKENS: usize,
     const NUM_LITERALS: usize,
+    const NUM_UPDATES: usize,
     const NUM_LEX_STATES: usize,
+    const NUM_UPDATE_STATES: usize,
     const NUM_PARSE_STATES: usize,
     const NUM_RULES: usize,
 > {
-    pub parser: ParseTable<NUM_RULES, NUM_PARSE_STATES, NUM_TOKENS>,
+    parser: ParseTable<NUM_RULES, NUM_PARSE_STATES, NUM_TOKENS>,
     trie: Trie<NUM_LITERALS>,
-    dfa: RegexTable<NUM_LEX_STATES>,
+    lexer: RegexTable<NUM_LEX_STATES>,
+    lex_update: RegexTable<NUM_UPDATE_STATES>,
     lexeme_callbacks: [fn(&mut S, &str) -> N; NUM_TERMINALS],
+    update_callbacks: [fn(&mut S, &str); NUM_UPDATES],
     rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
     is_terminal: [bool; NUM_TOKENS],
-    phantom_lex_state: PhantomData<S>
+    phantom_lex_state: PhantomData<S>,
 }
 
 impl<
-        N: Debug + Clone,
-        S: Debug,
+        N: Clone + Debug,
+        S,
         const NUM_TERMINALS: usize,
         const NUM_TOKENS: usize,
         const NUM_LITERALS: usize,
+        const NUM_UPDATES: usize,
         const NUM_LEX_STATES: usize,
+        const NUM_UPDATE_STATES: usize,
         const NUM_PARSE_STATES: usize,
         const NUM_RULES: usize,
     >
-    Engine<N, S, NUM_TERMINALS, NUM_TOKENS, NUM_LITERALS, NUM_LEX_STATES, NUM_PARSE_STATES, NUM_RULES>
+    Engine<
+        N,
+        S,
+        NUM_TERMINALS,
+        NUM_TOKENS,
+        NUM_LITERALS,
+        NUM_UPDATES,
+        NUM_LEX_STATES,
+        NUM_UPDATE_STATES,
+        NUM_PARSE_STATES,
+        NUM_RULES,
+    >
 {
     pub fn from_raw(
-        (actions, rule_lens): (
+        parser: (
             [[(usize, usize); NUM_TOKENS]; NUM_PARSE_STATES],
             [(usize, usize); NUM_RULES],
         ),
-        (trans, fin): (
+        lexer: (
             [[Option<usize>; 256]; NUM_LEX_STATES],
             [Option<(usize, usize)>; NUM_LEX_STATES],
         ),
-        trie_raw: [(Option<(usize, usize)>, [Option<usize>; 256]); NUM_LITERALS],
+        lex_update: (
+            [[Option<usize>; 256]; NUM_UPDATE_STATES],
+            [Option<(usize, usize)>; NUM_UPDATE_STATES],
+        ),
+        trie: [(Option<(usize, usize)>, [Option<usize>; 256]); NUM_LITERALS],
         lexeme_callbacks: [fn(&mut S, &str) -> N; NUM_TERMINALS],
+        update_callbacks: [fn(&mut S, &str); NUM_UPDATES],
         rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
         is_terminal: [bool; NUM_TOKENS],
     ) -> Result<Self, &'static str> {
         Ok(Self {
-            parser: ParseTable::from_raw(actions, rule_lens)?,
-            trie: Trie::from_raw(trie_raw),
-            dfa: RegexTable { trans, fin },
+            parser: ParseTable::from_raw(parser.0, parser.1)?,
+            trie: Trie::from_raw(trie),
+            lexer: RegexTable {
+                trans: lexer.0,
+                fin: lexer.1,
+            },
+            lex_update: RegexTable {
+                trans: lex_update.0,
+                fin: lex_update.1,
+            },
             lexeme_callbacks,
+            update_callbacks,
             rule_callbacks,
             is_terminal,
             phantom_lex_state: PhantomData,
@@ -153,10 +183,13 @@ impl<
 
     pub fn parse(&mut self, node: usize, mut s: &str, mut lex_state: S) -> Result<N, &'static str> {
         let mut cur_lexeme = self.lex(&mut s, &mut lex_state);
-        if self.is_terminal[node] && let Ok((Some(_), lexeme_id)) = cur_lexeme.as_ref() && node == *lexeme_id {
+        if self.is_terminal[node]
+            && let Ok((Some(_), lexeme_id)) = cur_lexeme.as_ref()
+            && node == *lexeme_id
+        {
             return Ok(cur_lexeme.unwrap().0.unwrap());
         } else if self.is_terminal[node] {
-            return Err(ERR_SYNTAX_ERR)
+            return Err(ERR_SYNTAX_ERR);
         }
         let mut state_stack: CappedVec<MAX_STATE_STACK, usize> = CappedVec::new();
         state_stack.push(node);
@@ -204,41 +237,39 @@ impl<
     }
 
     fn lex(&mut self, s: &mut &str, state: &mut S) -> Result<(Option<N>, usize), &'static str> {
+        let (update_fin, update_len) = self.lex_update.query_longest(&s.as_bytes());
+        if let Some((update_id, _)) = update_fin {
+            (self.update_callbacks[update_id])(state, &s[0..update_len]);
+            *s = &s[update_len..];
+        }
         if s.is_empty() {
             return Ok((None, self.parser.actions[0].len() - 1));
         }
-        let (trie_match, trie_len) = if let Some((trie_lexeme, trie_node, trie_len)) =
-            self.trie.query_longest(&s.as_bytes())
+        let bytes = &s.as_bytes();
+        let (trie_match, trie_len) = self.trie.query_longest(bytes);
+        let (regex_match, regex_len) = self.lexer.query_longest(bytes);
+        let (fin, len) = if trie_len > regex_len
+            && let Some(fin) = trie_match
         {
-            (Some((trie_lexeme, trie_node)), trie_len)
-        } else {
-            (None, 0)
-        };
-        let bytes = s.as_bytes();
-        let mut regex_match = None;
-        let mut cur = 0;
-        let mut regex_len = 0;
-        while regex_len < bytes.len()
-            && let Some(next) = self.dfa.trans[cur][bytes[regex_len] as usize]
+            Ok((fin, trie_len))
+        } else if regex_len > trie_len
+            && let Some(fin) = regex_match
         {
-            if let Some(fin) = self.dfa.fin[next] {
-                regex_match = Some(fin);
-            }
-            cur = next;
-            regex_len += 1;
-        }
-        let (len, (lexeme_id, node_id)) = if let Some(trie_fin) = trie_match
+            Ok((fin, regex_len))
+        } else if regex_len == trie_len
             && let Some(regex_fin) = regex_match
+            && let Some(trie_fin) = trie_match
         {
-            Some((regex_len, regex_fin).max((trie_len, trie_fin)))
+            if regex_fin.0 > trie_fin.0 {
+                Ok((regex_fin, regex_len))
+            } else {
+                Ok((trie_fin, trie_len))
+            }
         } else {
-            regex_match
-                .map(|m| (regex_len, m))
-                .or(trie_match.map(|m| (trie_len, m)))
-        }
-        .ok_or(ERR_INVALID_LEXEME)?;
-        let lexeme = (self.lexeme_callbacks[lexeme_id])(state, &s[0..len]);
+            Err(ERR_INVALID_LEXEME)
+        }?;
+        let lexeme = (self.lexeme_callbacks[fin.0])(state, &s[0..len]);
         *s = &s[len..];
-        Ok((Some(lexeme), node_id))
+        Ok((Some(lexeme), fin.1))
     }
 }

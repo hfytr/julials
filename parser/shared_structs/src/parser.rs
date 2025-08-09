@@ -45,6 +45,7 @@ impl ToTokens for ParseAction {
     }
 }
 
+#[derive(Debug)]
 pub struct ParseTable<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize> {
     pub actions: [[ParseAction; NUM_TOKENS]; NUM_STATES],
     pub rule_lens: [(usize, usize); NUM_RULES],

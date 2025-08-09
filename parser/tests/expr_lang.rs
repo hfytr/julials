@@ -70,6 +70,7 @@ fn term_node(factor: Node, mut term: Node) -> Node {
 parser::parser! {
     State(Empty),
     Output(Node),
+    Update(" *" |_, _| {}),
     Expr => Rule(
         Term Plus Expr |term, _, expr| expr_node(term, expr),
         Term |term| Node::Expr(vec![Box::new(term)])
@@ -103,7 +104,7 @@ fn parse_expression_language() {
 
 #[test]
 fn parse_term() {
-    let s = String::from("1*7*(5+7)");
+    let s = String::from("1  *7*(5+7  )");
     let mut engine = create_parsing_engine().unwrap();
     let expr = engine.parse(1, &s, Empty()).unwrap();
     dbg!(&expr);

@@ -129,12 +129,12 @@ pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie,
         fin: None,
         children: [None; 256],
     }]);
-    let (regexi, production_ids, _) = productions.iter().enumerate().fold(
+    let (regexi, production_ids, _) = productions.into_iter().enumerate().fold(
         (vec![], BTreeMap::new(), 0),
         |(mut regexi, mut production_ids, mut lexeme_i), (production_i, production)| {
             match &production.prod_type {
                 ProductionType::Regex(patt, _) => {
-                    regexi.push((patt.as_str(), lexeme_i, production_ids.len()));
+                    regexi.push((patt.clone(), lexeme_i, production_ids.len()));
                     lexeme_i += 1;
                 }
                 ProductionType::Literal(patt, _) => {
@@ -162,7 +162,7 @@ pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie,
                 .map(move |raw_components| (raw_components, rule_name))
         })
     {
-        let production_id = *production_ids.get(&rule_name).unwrap();
+        let production_id = *production_ids.get(rule_name).unwrap();
         rules[production_id].push(raw_components.0.iter().map(|raw_component|
             *production_ids.get(&raw_component.to_string()).unwrap_or_else(|| {
                 eprintln!(r#"Reference to undefined production "{raw_component}" in definition of production "{rule_name}""#);
@@ -174,7 +174,7 @@ pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie,
     if any_errors {
         panic!();
     }
-    let dfa = RegexDFA::from_regexi(regexi);
+    let regex = RegexDFA::from_regexi(regexi.into_iter());
     let eprint_conflict = |node: usize, rule, item: usize, s| {
         let item_name = productions
             .get(item)
@@ -197,5 +197,5 @@ pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie,
         }
         Ok(parser) => parser,
     };
-    (dfa, trie, parser)
+    (regex, trie, parser)
 }

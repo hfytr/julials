@@ -7,8 +7,10 @@ use shared_structs::{DynParseTable, DynTrie, RegexDFA};
 use std::process::exit;
 use syn::{
     parse::{discouraged::Speculative, Parse},
+    punctuated::Punctuated,
     spanned::Spanned,
-    Error, ExprClosure, PathSegment, Token,
+    token::Comma,
+    Error, ExprClosure, GenericParam, Generics, LitStr, Path, Token,
 };
 
 const ERR_STATE_NOT_SPECIFIED: &'static str =
@@ -17,18 +19,26 @@ const ERR_MISSING_ELEM: &'static str =
     "ERROR: Expected State | <Rule-Name> at beginning of element.";
 const ERR_MISSING_STATE_TYPE: &'static str =
     "ERROR: Expected parenthesized lexer state type after State element.";
-const ERR_MISSING_INIT_STATE: &'static str =
-    "ERROR: Expected initial lexer state after = in State element.";
 const ERR_MISSING_OUT_TYPE: &'static str =
     "ERROR: Expected parenthesized output type after Output element.";
 const ERR_NO_OUT_TYPE: &'static str = "ERROR: You must specify the output type with Output(...)";
 const ERR_LEADING_COMMA: &'static str = "ERROR: Leading comma in macro input.";
+const ERR_MISSING_UPDATE_REGEX: &'static str =
+    "ERROR: Expected string literal in parenthesized Update(...)";
+const ERR_MISSING_UPDATE_CALLBACK: &'static str =
+    "ERROR: Expected string literal in parenthesized Update(...)";
+const ERR_INVALID_STATE_GENERICS: &'static str = "ERROR: Found invalid genircs within State(...)";
+const ERR_INVALID_OUT_GENERICS: &'static str = "ERROR: Found invalid genircs within Output(...)";
+const ERR_NO_WHERE_CLAUSE: &'static str =
+    "ERROR: Where clauses are not supported when specifying Output / State";
 
 extern crate proc_macro;
 
 /// The parser macro takes comma separated arguments of three types:
 /// - State: This argument must only be passed once. It is of the form State(<StateTypeName>),
 ///   and specifies the state which will be maintained during the lexing stage of your parser
+/// Output: Specifies the output enum produced by parser. Every single Rule must have a name
+/// which corresponds to a member of this enum.
 /// - Elements: This argument must appear at least once. It specifies the various elements of
 ///   your language, and takes three sub-forms:
 ///   - Regex: Specifies a regex defined lexeme within your language. It must be of the form:
@@ -38,8 +48,6 @@ extern crate proc_macro;
 ///   - Literal: Specifies a literal defined lexeme within your language. It is of the same form as
 ///     a Regex, except it is specified as:
 ///       <LexemeName> => Literal(...) <callback>
-///   - Output: Specifies the output enum produced by parser. Every single Rule must have a name
-///     which corresponds to a member of this enum.
 ///   - Rule: Specifies a branch node in your AST. It must be of the form:
 ///       <RuleName> => Rule(<NodeInnerType>, <rule_1>, <rule_2>, ... )
 ///     where each rule is of the form: elem1 elem2 elem3 ... <optional-callback>
@@ -68,12 +76,16 @@ impl<T> Context for syn::Result<T> {
 }
 
 struct MacroBody {
-    dfa: RegexDFA,
+    regex: RegexDFA,
+    update: RegexDFA,
+    update_callbacks: Vec<ExprClosure>,
     trie: DynTrie,
     // TODO allow full paths as out type
-    out_type: PathSegment,
+    out_type: TokenStream,
+    out_generics: Option<Punctuated<GenericParam, Comma>>,
+    state_type: TokenStream,
+    state_generics: Option<Punctuated<GenericParam, Comma>>,
     productions: Vec<Production>,
-    state_type: syn::Ident,
     parser: DynParseTable,
 }
 
@@ -82,26 +94,65 @@ impl Parse for MacroBody {
         let mut state = None;
         let mut productions: Vec<Production> = vec![];
         let mut out_type = None;
+        let mut out_generics = None;
+        let mut state_generics = None;
+        let mut update_vec = vec![];
         while !input.is_empty() {
             let fork = input.fork();
             if let Result::Ok(ident) = fork.parse::<Ident>()
-                && ["State", "Output"].contains(&ident.to_string().as_str())
+                && ["State", "Output", "Update"].contains(&ident.to_string().as_str())
             {
                 input.advance_to(&fork);
                 let ident_str = ident.to_string();
                 if ident_str == "State" {
                     let content;
                     syn::parenthesized!(content in input);
-                    let state_type = content.parse().context(ERR_MISSING_STATE_TYPE)?;
-                    state = Some(state_type);
+                    state = Some(content.parse::<Path>().context(ERR_MISSING_STATE_TYPE)?);
+                    state_generics = content
+                        .is_empty()
+                        .then(|| {
+                            let generics = content
+                                .parse::<Generics>()
+                                .context(ERR_INVALID_STATE_GENERICS)?;
+                            if generics.where_clause.is_some() {
+                                return Err(syn::Error::new(
+                                    generics.where_clause.span(),
+                                    ERR_NO_WHERE_CLAUSE,
+                                ));
+                            }
+                            Ok::<_, syn::Error>(generics.params)
+                        })
+                        .transpose()?;
                 } else if ident_str == "Output" {
                     let content;
                     syn::parenthesized!(content in input);
-                    out_type = Some(
+                    out_type = Some(content.parse::<Path>().context(ERR_MISSING_OUT_TYPE)?);
+                    out_generics = content
+                        .is_empty()
+                        .then(|| {
+                            let generics = content
+                                .parse::<Generics>()
+                                .context(ERR_INVALID_OUT_GENERICS)?;
+                            if generics.where_clause.is_some() {
+                                return Err(syn::Error::new(
+                                    generics.where_clause.span(),
+                                    ERR_NO_WHERE_CLAUSE,
+                                ));
+                            }
+                            Ok::<_, syn::Error>(generics.params)
+                        })
+                        .transpose()?;
+                } else if ident_str == "Update" {
+                    let content;
+                    syn::parenthesized!(content in input);
+                    update_vec.push((
                         content
-                            .parse::<PathSegment>()
-                            .context(ERR_MISSING_OUT_TYPE)?,
-                    );
+                            .parse::<LitStr>()
+                            .context(ERR_MISSING_UPDATE_REGEX)?,
+                        content
+                            .parse::<ExprClosure>()
+                            .context(ERR_MISSING_UPDATE_CALLBACK)?,
+                    ));
                 } else {
                     return Result::Err(Error::new(ident.span(), ERR_MISSING_ELEM));
                 }
@@ -113,37 +164,74 @@ impl Parse for MacroBody {
             }
         }
         let tot_span = input.span();
-        let state_type = state.ok_or(Error::new(tot_span, ERR_STATE_NOT_SPECIFIED))?;
         let out_type = out_type.ok_or(Error::new(tot_span, ERR_NO_OUT_TYPE))?;
-        let (dfa, trie, parser) = process_productions(&productions);
-        Ok(Self {
-            dfa,
-            trie,
-            out_type,
-            state_type,
+        let out_generics = out_generics.and_then(|g| (!g.is_empty()).then_some(g));
+        let state_type = state.ok_or(Error::new(tot_span, ERR_STATE_NOT_SPECIFIED))?;
+        let state_generics = state_generics.and_then(|g| (!g.is_empty()).then_some(g));
+        let update = RegexDFA::from_regexi(
+            update_vec
+                .iter()
+                .enumerate()
+                .map(|(i, (s, _))| (s.value(), i, 0)),
+        );
+        let update_callbacks = update_vec.into_iter().map(|(_, c)| c).collect();
+        let (regex, trie, parser) = process_productions(&productions);
+
+        let result = Ok(Self {
+            regex,
+            update,
+            update_callbacks,
             productions,
+            trie,
+            out_type: quote! { #out_type<#out_generics> },
+            out_generics,
+            state_type: quote! { #state_type<#state_generics> },
+            state_generics,
             parser,
-        })
+        });
+        result
     }
 }
 
 fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
     let MacroBody {
-        dfa,
+        regex,
+        update,
+        update_callbacks,
         trie,
         out_type,
+        out_generics,
         productions,
         state_type,
+        state_generics,
         parser,
     } = syn::parse2(input)?;
 
+    let generics = if let Some(state_generics) = &state_generics
+        && let Some(out_generics) = &out_generics
+    {
+        Some(quote! { generics #state_generics, #out_generics })
+    } else {
+        out_generics
+            .as_ref()
+            .or(out_generics.as_ref())
+            .map(|w| w.into_token_stream())
+    };
+
     let num_tokens = productions.len() + 1;
     let num_literals = trie.0.len();
-    let num_lex_states = dfa.fin.len();
+    let num_updates = update_callbacks.len();
+    let num_lex_states = regex.fin.len();
+    let num_update_states = update.fin.len();
     let num_parse_states = parser.actions.len();
     let num_rules = parser.rule_lens.len();
     let mut is_token = TokenStream::new();
-    is_token.append_separated(productions.iter().map(|p| !matches!(p.prod_type, ProductionType::Rule(_))), Punct::new(',', Spacing::Alone));
+    is_token.append_separated(
+        productions
+            .iter()
+            .map(|p| !matches!(p.prod_type, ProductionType::Rule(_))),
+        Punct::new(',', Spacing::Alone),
+    );
     is_token.append_all(quote! { , true });
 
     let make_rule_callback = |maybe_user_callback: Option<&ExprClosure>,
@@ -169,9 +257,8 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         let stack_pops = quote! { #(#stack_pops_iter)* };
         let callback_args_iter = callback_args_rev.rev();
         let callback_args = quote! { #(#callback_args_iter),* };
-        let cap = shared_structs::MAX_STATE_STACK;
         let callback = quote! {
-            fn #callback_name(node_stack: &mut parser::CappedVec<#cap, #out_type>) -> #out_type {
+            fn #callback_name<#out_generics>(node_stack: &mut parser::CappedVec<{shared_structs::MAX_STATE_STACK}, #out_type>) -> #out_type {
                 #stack_pops
                 let user_callback = #user_callback;
                 user_callback(#callback_args)
@@ -179,29 +266,28 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         };
         (callback, callback_name)
     };
-    let make_lexeme_callback =
-        |user_callback: &ExprClosure, num_generated: usize| -> (TokenStream, Ident) {
-            let callback_name = Ident::new(&format!("__gen_{}", num_generated), Span::call_site());
-            let callback = quote! {
-                fn #callback_name(state: &mut #state_type, s: &str) -> #out_type {
-                    let user_callback = #user_callback;
-                    user_callback(state, s)
-                }
-            };
-            (callback, callback_name)
-        };
+
     let mut lexeme_callback_defs = TokenStream::new();
     let mut lexeme_callback_names = vec![];
     let mut rule_callback_defs = TokenStream::new();
     let mut rule_callback_names = vec![];
+    let mut update_callback_defs = TokenStream::new();
+    let mut update_callback_names = vec![];
     let mut num_terminals = 0usize;
     let mut num_generated = 0;
     let mut cur_rule = 0;
 
     for production in productions.iter() {
         match &production.prod_type {
-            ProductionType::Literal(_, callback) | ProductionType::Regex(_, callback) => {
-                let (callback, callback_name) = make_lexeme_callback(callback, num_generated);
+            ProductionType::Literal(_, user_callback) | ProductionType::Regex(_, user_callback) => {
+                let callback_name =
+                    Ident::new(&format!("__gen_{}", num_generated), Span::call_site());
+                let callback = quote! {
+                    fn #callback_name(state: &mut #state_type, s: &str) -> #out_type {
+                        let user_callback = #user_callback;
+                        user_callback(state, s)
+                    }
+                };
                 num_terminals += 1;
                 num_generated += 1;
                 lexeme_callback_defs.append_all(callback);
@@ -222,45 +308,69 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
             }
         }
     }
-    let mut lexeme_callbacks = TokenStream::new();
-    lexeme_callbacks.append_separated(lexeme_callback_names, Punct::new(',', Spacing::Alone));
-    let mut rule_callbacks = TokenStream::new();
-    rule_callbacks.append_separated(rule_callback_names, Punct::new(',', Spacing::Alone));
-
-    let mut rule_callbacks_inner = TokenStream::new();
-    let default_rule_callback = quote! { Box::new(|mut children| children.swap_remove(0)) };
-    rule_callbacks_inner.append_all(default_rule_callback.clone());
-    rule_callbacks_inner.append_all(quote! { , });
-    rule_callbacks_inner.append_separated(
-        productions.into_iter().flat_map(|production| {
-            if let ProductionType::Rule(rules) = production.prod_type {
-                rules
-            } else {
-                vec![]
+    for update_callback in update_callbacks.iter() {
+        let callback_name = Ident::new(&format!("__gen_{}", num_generated), Span::call_site());
+        num_generated += 1;
+        let callback = quote! {
+            fn #callback_name(state: &mut #state_type, text: &str) {
+                let update_callback = #update_callback;
+                update_callback(state, text);
             }
-            .into_iter()
-            .map(|(_, callback)| {
-                if let Some(callback) = callback.as_ref() {
-                    quote! { Box::new(#callback) }
-                } else {
-                    default_rule_callback.clone()
-                }
-            })
+        };
+        update_callback_defs.append_all(callback);
+        update_callback_names.push(callback_name);
+    }
+
+    let mut lexeme_callbacks = TokenStream::new();
+    lexeme_callbacks.append_separated(
+        lexeme_callback_names.into_iter().map(|name| {
+            quote! {
+                #name as fn(&mut #state_type, &str) -> #out_type
+            }
+        }),
+        Punct::new(',', Spacing::Alone),
+    );
+    let mut rule_callbacks = TokenStream::new();
+    rule_callbacks.append_separated(rule_callback_names.into_iter().map(|name| quote! {
+        #name as fn(&mut parser::CappedVec<{shared_structs::MAX_STATE_STACK}, #out_type>) -> #out_type
+    }), Punct::new(',', Spacing::Alone));
+    let mut update_callbacks = TokenStream::new();
+    update_callbacks.append_separated(
+        update_callback_names.into_iter().map(|name| {
+            quote! {
+                #name as fn(&mut #state_type, &str)
+            }
         }),
         Punct::new(',', Spacing::Alone),
     );
 
     Ok(quote! {
-        fn create_parsing_engine() ->
-            Result<parser::Engine<#out_type, #state_type, #num_terminals, #num_tokens, #num_literals, #num_lex_states, #num_parse_states, #num_rules>, &'static str>
+        fn create_parsing_engine #generics() ->
+            Result<parser::Engine<
+                #out_type,
+                #state_type,
+                #num_terminals,
+                #num_tokens,
+                #num_literals,
+                #num_updates,
+                #num_lex_states,
+                #num_update_states,
+                #num_parse_states,
+                #num_rules
+                >,
+                &'static str
+            >
         {
             #lexeme_callback_defs
             #rule_callback_defs
+            #update_callback_defs
             parser::Engine::from_raw(
                 #parser,
-                #dfa,
+                #regex,
+                #update,
                 #trie,
                 [#lexeme_callbacks],
+                [#update_callbacks],
                 [#rule_callbacks],
                 [#is_token],
             )

@@ -63,20 +63,22 @@ impl<const NUM_LITERALS: usize> Trie<NUM_LITERALS> {
         Trie(nodes)
     }
 
-    pub fn query_longest(&self, s: &[u8]) -> Option<(usize, usize, usize)> {
-        let mut maybe_trie_match = None;
+    pub fn query_longest(&self, s: &[u8]) -> (Option<(usize, usize)>, usize) {
+        let mut cur_match = None;
+        let mut match_len = 0;
         let mut cur = 0;
-        let mut i = 0;
-        while i < s.len()
-            && let Some(next) = self.0[cur].children[s[i] as usize]
+        let mut len = 0;
+        while len < s.len()
+            && let Some(next) = self.0[cur].children[s[len] as usize]
         {
+            len += 1;
             if let Some(fin) = self.0[next].fin {
-                maybe_trie_match = Some(fin);
+                cur_match = Some(fin);
+                match_len = len;
             }
             cur = next;
-            i += 1;
         }
-        maybe_trie_match.map(|(lexeme_id, node_id)| (lexeme_id, node_id, i))
+        (cur_match, match_len)
     }
 }
 
@@ -135,9 +137,30 @@ impl ToTokens for Empty {
     }
 }
 
+#[derive(Debug)]
 pub struct RegexTable<const NUM_STATES: usize> {
     pub trans: [[Option<usize>; 256]; NUM_STATES],
     pub fin: [Option<(usize, usize)>; NUM_STATES],
+}
+
+impl<const NUM_STATES: usize> RegexTable<NUM_STATES> {
+    pub fn query_longest(&self, s: &[u8]) -> (Option<(usize, usize)>, usize) {
+        let mut cur_match = None;
+        let mut match_len = 0;
+        let mut cur = 0;
+        let mut len = 0;
+        while len < s.len()
+            && let Some(next) = self.trans[cur][s[len] as usize]
+        {
+            len += 1;
+            if let Some(fin) = self.fin[next] {
+                cur_match = Some(fin);
+                match_len = len;
+            }
+            cur = next;
+        }
+        (cur_match, match_len)
+    }
 }
 
 pub struct RegexDFA {
@@ -162,7 +185,7 @@ impl Debug for RegexDFA {
 }
 
 impl RegexDFA {
-    pub fn from_regexi(regexi: Vec<(&str, usize, usize)>) -> Self {
+    pub fn from_regexi(regexi: impl Iterator<Item = (String, usize, usize)>) -> Self {
         let nfa = NFA::from_regexi(regexi);
         let init_state = nfa.epsilon_closure(0);
         let mut res = Self {
@@ -288,10 +311,10 @@ impl NFA {
         res
     }
 
-    pub fn from_regexi(regexi: Vec<(&str, usize, usize)>) -> Self {
+    pub fn from_regexi(regexi: impl Iterator<Item = (String, usize, usize)>) -> Self {
         let mut init = Self::from_regex("", 0).0;
         init.fin = vec![None];
-        regexi.iter().fold(init, |mut acc, regex| {
+        regexi.fold(init, |mut acc, regex| {
             let (mut new_nfa, new_fin) = Self::from_regex(&regex.0, acc.fin.len());
             let len = acc.edges.len();
             acc.fin.resize(len + new_nfa.edges.len(), None);
@@ -434,7 +457,7 @@ impl NFA {
                     }
                     let new_node = edges.len() + node_offset;
                     edges[last.1 - node_offset].push((Some((c, c)), new_node));
-                    last = (new_node, new_node);
+                    last = (last.1, new_node);
                     edges.push(vec![]);
                     s = tail;
                 }
