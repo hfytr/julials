@@ -84,6 +84,7 @@ parser::parser! {
         Node::Literal(text.parse().unwrap())
     }),
     Multiply => Literal("*" |_, _| Node::Multiply),
+    Multiply => Literal("x" |_, _| Node::Multiply),
     Plus => Literal("+" |_, _| Node::Plus),
     LeftParen => Literal("(" |_, _| Node::LeftParen),
     RightParen => Literal(")" |_, _| Node::RightParen),
@@ -91,7 +92,7 @@ parser::parser! {
 
 #[test]
 fn parse_expression_language() {
-    let s = String::from("1*7*(5+7)+3*(5+7*(6+9))*(6)");
+    let s = String::from("1*7*(5+7)+3*(5+7*(6+9))x(6)");
     let mut engine = create_parsing_engine().unwrap();
     let expr = engine.parse(0, &s, ()).unwrap();
     dbg!(&expr);

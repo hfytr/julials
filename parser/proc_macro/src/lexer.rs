@@ -124,29 +124,49 @@ impl Parse for Production {
     }
 }
 
-pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie, DynParseTable) {
+pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie, DynParseTable, usize, Vec<bool>) {
     let mut trie = DynTrie(vec![TrieNode {
         fin: None,
         children: [None; 256],
     }]);
-    let (regexi, production_ids, _) = productions.into_iter().enumerate().fold(
-        (vec![], BTreeMap::new(), 0),
-        |(mut regexi, mut production_ids, mut lexeme_i), (production_i, production)| {
+    fn update_ids<'a>(
+        production_ids: &mut BTreeMap<&'a str, usize>,
+        production: &'a str
+    ) -> usize
+    {
+        production_ids.get(production)
+            .map(|x| *x)
+            .unwrap_or_else(|| {
+                production_ids.insert(production, production_ids.len());
+                production_ids.len() - 1
+            })
+    }
+    let (regexi, production_ids, mut is_token, _) = productions.into_iter().fold(
+        (vec![], BTreeMap::new(), vec![false; productions.len()], 0),
+        |(mut regexi, mut production_ids, mut is_token, mut lexeme_i), production| {
             match &production.prod_type {
                 ProductionType::Regex(patt, _) => {
-                    regexi.push((patt.clone(), lexeme_i, production_ids.len()));
+                    let production_id = update_ids(&mut production_ids, production.name_raw.as_str());
+                    regexi.push((patt.clone(), lexeme_i, production_id));
+                    is_token[production_id] = true;
                     lexeme_i += 1;
                 }
                 ProductionType::Literal(patt, _) => {
-                    trie.insert(patt.as_bytes(), (lexeme_i, production_ids.len()));
+                    let production_id = update_ids(&mut production_ids, production.name_raw.as_str());
+                    trie.insert(patt.as_bytes(), (lexeme_i, production_id));
+                    is_token[production_id] = true;
                     lexeme_i += 1;
                 }
-                ProductionType::Rule(_) => {}
+                ProductionType::Rule(_) => {
+                    is_token[production_ids.len()] = false;
+                    production_ids.insert(production.name_raw.as_str(), production_ids.len());
+                }
             }
-            production_ids.insert(&production.name_raw, production_i);
-            (regexi, production_ids, lexeme_i)
+            (regexi, production_ids, is_token, lexeme_i)
         },
     );
+    is_token.resize(production_ids.len(), false);
+
     let mut any_errors = false;
     // augment with eof token
     let mut rules: Vec<Vec<Vec<usize>>> = vec![vec![]; production_ids.len() + 1];
@@ -162,9 +182,9 @@ pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie,
                 .map(move |raw_components| (raw_components, rule_name))
         })
     {
-        let production_id = *production_ids.get(rule_name).unwrap();
+        let production_id = *production_ids.get(rule_name.as_str()).unwrap();
         rules[production_id].push(raw_components.0.iter().map(|raw_component|
-            *production_ids.get(&raw_component.to_string()).unwrap_or_else(|| {
+            *production_ids.get(&raw_component.to_string().as_str()).unwrap_or_else(|| {
                 eprintln!(r#"Reference to undefined production "{raw_component}" in definition of production "{rule_name}""#);
                 any_errors = true;
                 &0
@@ -197,5 +217,6 @@ pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie,
         }
         Ok(parser) => parser,
     };
-    (regex, trie, parser)
+    
+    (regex, trie, parser, production_ids.len() + 1, is_token) // + 1 for eof
 }

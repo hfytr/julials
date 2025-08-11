@@ -68,6 +68,43 @@ parser! {
         state.line += 1;
         NodeKind::TermL
     }),
+
+    LArrowL => Literal("<-", |state, text| make_lit(state, text, NodeKind::AL)),
+    RArrowL => Literal("->" , |state, text| make_lit(state, text, NodeKind::AL)),
+
+    LAndL => Literal("&&", |state, text| make_lit(state, text, NodeKind::LAndL)),
+    LOrL => Literal("||", |state, text| make_lit(state, text, NodeKind::LOrL)),
+
+    DivL => Literal("/", |state, text| make_lit(state, text, NodeKind::DivL)),
+    ModL => Literal("÷", |state, text| make_lit(state, text, NodeKind::ModL)),
+    ModL => Literal("%", |state, text| make_lit(state, text, NodeKind::ModL)),
+    AndL => Literal("&", |state, text| make_lit(state, text, NodeKind::AndL)),
+    MulL => Literal("⋅", |state, text| make_lit(state, text, NodeKind::MulL)),
+    MulL => Literal("*", |state, text| make_lit(state, text, NodeKind::MulL)),
+    LShiftL => Literal("<<", |state, text| make_lit(state, text, NodeKind::LShiftL)),
+    RShiftL => Literal(">>", |state, text| make_lit(state, text, NodeKind::RShiftL)),
+    ULShiftL => Literal("<<<", |state, text| make_lit(state, text, NodeKind::ULShiftL)),
+    URShiftL => Literal(">>>", |state, text| make_lit(state, text, NodeKind::URShiftL)),
+    RevDivL => Literal("\\" , |state, text| make_lit(state, text, NodeKind::RevDivL)),
+    AddL => Literal("+", |state, text| make_lit(state, text, NodeKind::AddL)),
+    SubL => Literal("-" , |state, text| make_lit(state, text, NodeKind::SubL)),
+    BNotL => Literal("~", |state, text| make_lit(state, text, NodeKind::BNotL)),
+
+    EqL => Literal("=", |state, text| make_lit(state, text, NodeKind::EqL)),
+    DivEqL => Literal("/=", |state, text| make_lit(state, text, NodeKind::DivEqL)),
+    ModEqL => Literal("÷=", |state, text| make_lit(state, text, NodeKind::ModEqL)),
+    ModEqL => Literal("%=", |state, text| make_lit(state, text, NodeKind::ModEqL)),
+    AndEqL => Literal("&=", |state, text| make_lit(state, text, NodeKind::AndEqL)),
+    MulEqL => Literal("⋅=", |state, text| make_lit(state, text, NodeKind::MulEqL)),
+    MulEqL => Literal("*=", |state, text| make_lit(state, text, NodeKind::MulEqL)),
+    LShiftEqL => Literal("<<=", |state, text| make_lit(state, text, NodeKind::LShiftEqL)),
+    RShiftEqL => Literal(">>=", |state, text| make_lit(state, text, NodeKind::RShiftEqL)),
+    ULShiftEqL => Literal("<<<=", |state, text| make_lit(state, text, NodeKind::ULShiftEqL)),
+    URShiftEqL => Literal(">>>=", |state, text| make_lit(state, text, NodeKind::URShiftEqL)),
+    RevDivEqL => Literal("\\=" , |state, text| make_lit(state, text, NodeKind::RevDivEqL)),
+    AddEqL => Literal("+=", |state, text| make_lit(state, text, NodeKind::AddEqL)),
+    SubEqL => Literal("-=" , |state, text| make_lit(state, text, NodeKind::SubEqL)),
+    BNotEqL => Literal("~=", |state, text| make_lit(state, text, NodeKind::BNotEqL)),
 }
 // < parametrized_choice > ::= '::' | '< :'  
 // < or_expression > ::= < or_expression > '||' < and_expression > |   

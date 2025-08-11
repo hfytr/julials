@@ -79,6 +79,8 @@ struct MacroBody {
     state_type: TokenStream,
     productions: Vec<Production>,
     parser: DynParseTable,
+    num_tokens: usize,
+    is_token: Vec<bool>,
 }
 
 impl Parse for MacroBody {
@@ -133,7 +135,7 @@ impl Parse for MacroBody {
                 .map(|(i, (s, _))| (s.value(), i, 0)),
         );
         let update_callbacks = update_vec.into_iter().map(|(_, c)| c).collect();
-        let (regex, trie, parser) = process_productions(&productions);
+        let (regex, trie, parser, num_tokens, is_token) = process_productions(&productions);
 
         let result = Ok(Self {
             regex,
@@ -144,6 +146,8 @@ impl Parse for MacroBody {
             out_type: quote! { #out_type },
             state_type: quote! { #state_type },
             parser,
+            num_tokens,
+            is_token
         });
         result
     }
@@ -159,23 +163,19 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         productions,
         state_type,
         parser,
+        num_tokens,
+        is_token,
     } = syn::parse2(input)?;
 
-    let num_tokens = productions.len() + 1;
     let num_literals = trie.0.len();
     let num_updates = update_callbacks.len();
     let num_lex_states = regex.fin.len();
     let num_update_states = update.fin.len();
     let num_parse_states = parser.actions.len();
     let num_rules = parser.rule_lens.len();
-    let mut is_token = TokenStream::new();
-    is_token.append_separated(
-        productions
-            .iter()
-            .map(|p| !matches!(p.prod_type, ProductionType::Rule(_))),
-        Punct::new(',', Spacing::Alone),
-    );
-    is_token.append_all(quote! { , true });
+    let mut is_token_toks = TokenStream::new();
+    is_token_toks.append_separated(is_token .iter(), Punct::new(',', Spacing::Alone));
+    is_token_toks.append_all(quote! { , true });
 
     let make_rule_callback = |maybe_user_callback: Option<&ExprClosure>,
                               num_generated: usize,
@@ -315,7 +315,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                 [#lexeme_callbacks],
                 [#update_callbacks],
                 [#rule_callbacks],
-                [#is_token],
+                [#is_token_toks],
             )
         }
     })
