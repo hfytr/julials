@@ -1,8 +1,5 @@
 use std::fmt::Display;
 
-#[derive(Default, Debug)]
-struct Empty();
-
 #[derive(Debug, Clone)]
 enum Node {
     Expr(Vec<Box<Node>>),
@@ -68,7 +65,7 @@ fn term_node(factor: Node, mut term: Node) -> Node {
 }
 
 parser::parser! {
-    State(Empty),
+    State(()),
     Output(Node),
     Update(" *" |_, _| {}),
     Expr => Rule(
@@ -96,7 +93,7 @@ parser::parser! {
 fn parse_expression_language() {
     let s = String::from("1*7*(5+7)+3*(5+7*(6+9))*(6)");
     let mut engine = create_parsing_engine().unwrap();
-    let expr = engine.parse(0, &s, Empty()).unwrap();
+    let expr = engine.parse(0, &s, ()).unwrap();
     dbg!(&expr);
     dbg!(expr.eval());
     assert_eq!(expr.eval(), 2064);
@@ -106,7 +103,7 @@ fn parse_expression_language() {
 fn parse_term() {
     let s = String::from("1  *7*(5+7  )");
     let mut engine = create_parsing_engine().unwrap();
-    let expr = engine.parse(1, &s, Empty()).unwrap();
+    let expr = engine.parse(1, &s, ()).unwrap();
     dbg!(&expr);
     dbg!(expr.eval());
     assert_eq!(expr.eval(), 84);
@@ -116,8 +113,8 @@ fn parse_term() {
 fn parse_literal() {
     let s = String::from("555");
     let mut engine = create_parsing_engine().unwrap();
-    let expr = engine.parse(3, &s, Empty()).unwrap();
-    dbg!(&expr);
+    let expr = engine.parse(3, &s, ()).unwrap();
+    println!("{}", expr);
     dbg!(expr.eval());
     assert_eq!(expr.eval(), 555);
 }

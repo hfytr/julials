@@ -220,11 +220,11 @@ impl RegexDFA {
                                 | res.states[base_state_ind].0.as_ref();
                             let new_ind = res.states.get_ind(&new_state).unwrap_or_else(|| {
                                 stack.push(res.states.len());
-                                res.fin.push(
-                                    new_state
-                                        .iter()
-                                        .fold(None, |acc, nfa_state| nfa.fin[nfa_state].or(acc)),
-                                );
+                                res.fin.push(new_state.iter().fold(None, |acc, nfa_state| {
+                                    acc.and_then(|acc| nfa.fin[nfa_state].map(|cur| cur.max(acc)))
+                                        .or(acc)
+                                        .or(nfa.fin[nfa_state])
+                                }));
                                 res.states.push(new_state, Empty()).0
                             });
                             new_state_map.insert(old_state, new_ind);

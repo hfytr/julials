@@ -260,7 +260,7 @@ impl<
             && let Some(regex_fin) = regex_match
             && let Some(trie_fin) = trie_match
         {
-            if regex_fin.0 > trie_fin.0 {
+            if regex_fin.0 < trie_fin.0 {
                 Ok((regex_fin, regex_len))
             } else {
                 Ok((trie_fin, trie_len))

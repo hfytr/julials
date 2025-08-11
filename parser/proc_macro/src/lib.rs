@@ -7,10 +7,8 @@ use shared_structs::{DynParseTable, DynTrie, RegexDFA};
 use std::process::exit;
 use syn::{
     parse::{discouraged::Speculative, Parse},
-    punctuated::Punctuated,
     spanned::Spanned,
-    token::Comma,
-    Error, ExprClosure, GenericParam, Generics, LitStr, Path, Token,
+    Error, ExprClosure, LitStr, Token, Type,
 };
 
 const ERR_STATE_NOT_SPECIFIED: &'static str =
@@ -27,10 +25,6 @@ const ERR_MISSING_UPDATE_REGEX: &'static str =
     "ERROR: Expected string literal in parenthesized Update(...)";
 const ERR_MISSING_UPDATE_CALLBACK: &'static str =
     "ERROR: Expected string literal in parenthesized Update(...)";
-const ERR_INVALID_STATE_GENERICS: &'static str = "ERROR: Found invalid genircs within State(...)";
-const ERR_INVALID_OUT_GENERICS: &'static str = "ERROR: Found invalid genircs within Output(...)";
-const ERR_NO_WHERE_CLAUSE: &'static str =
-    "ERROR: Where clauses are not supported when specifying Output / State";
 
 extern crate proc_macro;
 
@@ -82,9 +76,7 @@ struct MacroBody {
     trie: DynTrie,
     // TODO allow full paths as out type
     out_type: TokenStream,
-    out_generics: Option<Punctuated<GenericParam, Comma>>,
     state_type: TokenStream,
-    state_generics: Option<Punctuated<GenericParam, Comma>>,
     productions: Vec<Production>,
     parser: DynParseTable,
 }
@@ -94,8 +86,6 @@ impl Parse for MacroBody {
         let mut state = None;
         let mut productions: Vec<Production> = vec![];
         let mut out_type = None;
-        let mut out_generics = None;
-        let mut state_generics = None;
         let mut update_vec = vec![];
         while !input.is_empty() {
             let fork = input.fork();
@@ -107,41 +97,11 @@ impl Parse for MacroBody {
                 if ident_str == "State" {
                     let content;
                     syn::parenthesized!(content in input);
-                    state = Some(content.parse::<Path>().context(ERR_MISSING_STATE_TYPE)?);
-                    state_generics = content
-                        .is_empty()
-                        .then(|| {
-                            let generics = content
-                                .parse::<Generics>()
-                                .context(ERR_INVALID_STATE_GENERICS)?;
-                            if generics.where_clause.is_some() {
-                                return Err(syn::Error::new(
-                                    generics.where_clause.span(),
-                                    ERR_NO_WHERE_CLAUSE,
-                                ));
-                            }
-                            Ok::<_, syn::Error>(generics.params)
-                        })
-                        .transpose()?;
+                    state = Some(content.parse::<Type>().context(ERR_MISSING_STATE_TYPE)?);
                 } else if ident_str == "Output" {
                     let content;
                     syn::parenthesized!(content in input);
-                    out_type = Some(content.parse::<Path>().context(ERR_MISSING_OUT_TYPE)?);
-                    out_generics = content
-                        .is_empty()
-                        .then(|| {
-                            let generics = content
-                                .parse::<Generics>()
-                                .context(ERR_INVALID_OUT_GENERICS)?;
-                            if generics.where_clause.is_some() {
-                                return Err(syn::Error::new(
-                                    generics.where_clause.span(),
-                                    ERR_NO_WHERE_CLAUSE,
-                                ));
-                            }
-                            Ok::<_, syn::Error>(generics.params)
-                        })
-                        .transpose()?;
+                    out_type = Some(content.parse::<Type>().context(ERR_MISSING_OUT_TYPE)?);
                 } else if ident_str == "Update" {
                     let content;
                     syn::parenthesized!(content in input);
@@ -165,9 +125,7 @@ impl Parse for MacroBody {
         }
         let tot_span = input.span();
         let out_type = out_type.ok_or(Error::new(tot_span, ERR_NO_OUT_TYPE))?;
-        let out_generics = out_generics.and_then(|g| (!g.is_empty()).then_some(g));
         let state_type = state.ok_or(Error::new(tot_span, ERR_STATE_NOT_SPECIFIED))?;
-        let state_generics = state_generics.and_then(|g| (!g.is_empty()).then_some(g));
         let update = RegexDFA::from_regexi(
             update_vec
                 .iter()
@@ -183,10 +141,8 @@ impl Parse for MacroBody {
             update_callbacks,
             productions,
             trie,
-            out_type: quote! { #out_type<#out_generics> },
-            out_generics,
-            state_type: quote! { #state_type<#state_generics> },
-            state_generics,
+            out_type: quote! { #out_type },
+            state_type: quote! { #state_type },
             parser,
         });
         result
@@ -200,23 +156,10 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         update_callbacks,
         trie,
         out_type,
-        out_generics,
         productions,
         state_type,
-        state_generics,
         parser,
     } = syn::parse2(input)?;
-
-    let generics = if let Some(state_generics) = &state_generics
-        && let Some(out_generics) = &out_generics
-    {
-        Some(quote! { generics #state_generics, #out_generics })
-    } else {
-        out_generics
-            .as_ref()
-            .or(out_generics.as_ref())
-            .map(|w| w.into_token_stream())
-    };
 
     let num_tokens = productions.len() + 1;
     let num_literals = trie.0.len();
@@ -258,7 +201,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         let callback_args_iter = callback_args_rev.rev();
         let callback_args = quote! { #(#callback_args_iter),* };
         let callback = quote! {
-            fn #callback_name<#out_generics>(node_stack: &mut parser::CappedVec<{shared_structs::MAX_STATE_STACK}, #out_type>) -> #out_type {
+            fn #callback_name(node_stack: &mut parser::CappedVec<{shared_structs::MAX_STATE_STACK}, #out_type>) -> #out_type {
                 #stack_pops
                 let user_callback = #user_callback;
                 user_callback(#callback_args)
@@ -345,7 +288,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
     );
 
     Ok(quote! {
-        fn create_parsing_engine #generics() ->
+        fn create_parsing_engine() ->
             Result<parser::Engine<
                 #out_type,
                 #state_type,
