@@ -283,7 +283,7 @@ impl<
             (update_fin, update_len) = self.lex_update.query_longest(&s.as_bytes());
         }
         if s.is_empty() {
-            return Ok((None, self.parser.actions[0].len() - 1));
+            return Ok((None, NUM_TOKENS - 1));
         }
         let bytes = &s.as_bytes();
         let (trie_match, trie_len) = self.trie.query_longest(bytes);
