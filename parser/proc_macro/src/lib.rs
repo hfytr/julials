@@ -2,9 +2,9 @@ mod lexer;
 
 use crate::lexer::{process_productions, Production, ProductionType};
 use proc_macro2::{Ident, Punct, Spacing, Span, TokenStream};
-use quote::{quote, ToTokens, TokenStreamExt};
+use quote::{quote, quote_spanned, ToTokens, TokenStreamExt};
 use shared_structs::{DynParseTable, DynTrie, RegexDFA};
-use std::process::exit;
+use std::{collections::BTreeSet, process::exit};
 use syn::{
     parse::{discouraged::Speculative, Parse},
     spanned::Spanned,
@@ -13,6 +13,8 @@ use syn::{
 
 const ERR_STATE_NOT_SPECIFIED: &'static str =
     "ERROR: You must specify the lexer state with State(...)";
+const ERR_KIND_NOT_SPECIFIED: &'static str =
+    "ERROR: You must specify the lexer kind with Kind(...)";
 const ERR_MISSING_ELEM: &'static str =
     "ERROR: Expected State | <Rule-Name> at beginning of element.";
 const ERR_MISSING_STATE_TYPE: &'static str =
@@ -20,7 +22,6 @@ const ERR_MISSING_STATE_TYPE: &'static str =
 const ERR_MISSING_OUT_TYPE: &'static str =
     "ERROR: Expected parenthesized output type after Output element.";
 const ERR_NO_OUT_TYPE: &'static str = "ERROR: You must specify the output type with Output(...)";
-const ERR_LEADING_COMMA: &'static str = "ERROR: Leading comma in macro input.";
 const ERR_MISSING_UPDATE_REGEX: &'static str =
     "ERROR: Expected string literal in parenthesized Update(...)";
 const ERR_MISSING_UPDATE_CALLBACK: &'static str =
@@ -54,7 +55,7 @@ pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         Result::Ok(output) => output.into(),
         Result::Err(err) => {
             eprintln!("{}", err);
-            exit(1);
+            exit(69);
         }
     }
 }
@@ -70,13 +71,13 @@ impl<T> Context for syn::Result<T> {
 }
 
 struct MacroBody {
+    out_type: TokenStream,
+    state_type: TokenStream,
+    kind_type: TokenStream,
     regex: RegexDFA,
     update: RegexDFA,
     update_callbacks: Vec<ExprClosure>,
     trie: DynTrie,
-    // TODO allow full paths as out type
-    out_type: TokenStream,
-    state_type: TokenStream,
     productions: Vec<Production>,
     parser: DynParseTable,
     num_tokens: usize,
@@ -85,21 +86,22 @@ struct MacroBody {
 
 impl Parse for MacroBody {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let mut state = None;
         let mut productions: Vec<Production> = vec![];
         let mut out_type = None;
+        let mut state_type = None;
+        let mut kind_type = None;
         let mut update_vec = vec![];
         while !input.is_empty() {
             let fork = input.fork();
             if let Result::Ok(ident) = fork.parse::<Ident>()
-                && ["State", "Output", "Update"].contains(&ident.to_string().as_str())
+                && ["Kind", "State", "Output", "Update"].contains(&ident.to_string().as_str())
             {
                 input.advance_to(&fork);
                 let ident_str = ident.to_string();
                 if ident_str == "State" {
                     let content;
                     syn::parenthesized!(content in input);
-                    state = Some(content.parse::<Type>().context(ERR_MISSING_STATE_TYPE)?);
+                    state_type = Some(content.parse::<Type>().context(ERR_MISSING_STATE_TYPE)?);
                 } else if ident_str == "Output" {
                     let content;
                     syn::parenthesized!(content in input);
@@ -115,36 +117,41 @@ impl Parse for MacroBody {
                             .parse::<ExprClosure>()
                             .context(ERR_MISSING_UPDATE_CALLBACK)?,
                     ));
+                } else if ident_str == "Kind" {
+                    let content;
+                    syn::parenthesized!(content in input);
+                    kind_type = Some(content.parse::<Type>().context(ERR_MISSING_OUT_TYPE)?);
                 } else {
                     return Result::Err(Error::new(ident.span(), ERR_MISSING_ELEM));
                 }
             } else {
                 productions.push(input.parse()?);
             }
-            if input.peek(Token![,]) {
-                input.parse::<Token![,]>().context(ERR_LEADING_COMMA)?;
-            }
+            input.parse::<Token![,]>().unwrap();
         }
-        let tot_span = input.span();
-        let out_type = out_type.ok_or(Error::new(tot_span, ERR_NO_OUT_TYPE))?;
-        let state_type = state.ok_or(Error::new(tot_span, ERR_STATE_NOT_SPECIFIED))?;
+
         let update = RegexDFA::from_regexi(
             update_vec
                 .iter()
                 .enumerate()
-                .map(|(i, (s, _))| (s.value(), i, 0)),
+                .map(|(i, (s, _))| (s.value(), i)),
         );
         let update_callbacks = update_vec.into_iter().map(|(_, c)| c).collect();
         let (regex, trie, parser, num_tokens, is_token) = process_productions(&productions);
+        let tot_span = input.span();
+        let out_type = out_type.ok_or(Error::new(tot_span, ERR_NO_OUT_TYPE))?;
+        let state_type = state_type.ok_or(Error::new(tot_span, ERR_STATE_NOT_SPECIFIED))?;
+        let kind_type = kind_type.ok_or(Error::new(tot_span, ERR_KIND_NOT_SPECIFIED))?;
 
         let result = Ok(Self {
+            out_type: quote! { #out_type },
+            state_type: quote! { #state_type },
+            kind_type: quote! { #kind_type },
             regex,
             update,
             update_callbacks,
             productions,
             trie,
-            out_type: quote! { #out_type },
-            state_type: quote! { #state_type },
             parser,
             num_tokens,
             is_token
@@ -155,13 +162,14 @@ impl Parse for MacroBody {
 
 fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
     let MacroBody {
+        state_type,
+        out_type,
+        kind_type,
         regex,
         update,
         update_callbacks,
         trie,
-        out_type,
         productions,
-        state_type,
         parser,
         num_tokens,
         is_token,
@@ -200,7 +208,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         let stack_pops = quote! { #(#stack_pops_iter)* };
         let callback_args_iter = callback_args_rev.rev();
         let callback_args = quote! { #(#callback_args_iter),* };
-        let callback = quote! {
+        let callback = quote_spanned! { user_callback.span() =>
             fn #callback_name(node_stack: &mut parser::CappedVec<{shared_structs::MAX_STATE_STACK}, #out_type>) -> #out_type {
                 #stack_pops
                 let user_callback = #user_callback;
@@ -212,6 +220,8 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
 
     let mut lexeme_callback_defs = TokenStream::new();
     let mut lexeme_callback_names = vec![];
+    let mut error_callback_defs = TokenStream::new();
+    let mut error_callback_names = vec![];
     let mut rule_callback_defs = TokenStream::new();
     let mut rule_callback_names = vec![];
     let mut update_callback_defs = TokenStream::new();
@@ -225,8 +235,8 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
             ProductionType::Literal(_, user_callback) | ProductionType::Regex(_, user_callback) => {
                 let callback_name =
                     Ident::new(&format!("__gen_{}", num_generated), Span::call_site());
-                let callback = quote! {
-                    fn #callback_name(state: &mut #state_type, s: &str) -> #out_type {
+                let callback = quote_spanned! { user_callback.span() => 
+                    fn #callback_name(state: &mut #state_type, s: &str) -> (#out_type, usize) {
                         let user_callback = #user_callback;
                         user_callback(state, s)
                     }
@@ -236,7 +246,8 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                 lexeme_callback_defs.append_all(callback);
                 lexeme_callback_names.push(callback_name);
             }
-            ProductionType::Rule(rules) => {
+            ProductionType::None => {},
+            ProductionType::Rule(rules, error) => {
                 for (_, callback) in rules {
                     let (callback, callback_name) = make_rule_callback(
                         callback.as_ref(),
@@ -248,9 +259,24 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                     rule_callback_defs.append_all(callback);
                     rule_callback_names.push(callback_name);
                 }
+                if let Some(user_callback) = error {
+                    let callback_name =
+                        Ident::new(&format!("__gen_{}", num_generated), Span::call_site());
+                    let callback = quote_spanned! { user_callback.span() =>
+                        fn #callback_name(vec: &shared_structs::CappedVec<{shared_structs::MAX_STATE_STACK}, #out_type>) -> #out_type {
+                            let user_callback = #user_callback;
+                            user_callback(state, s)
+                        }
+                    };
+                    error_callback_defs.append_all(callback);
+                    error_callback_names.push(callback_name);
+                    num_generated += 1;
+                }
             }
         }
     }
+    let num_error_callbacks = error_callback_names.len();
+
     for update_callback in update_callbacks.iter() {
         let callback_name = Ident::new(&format!("__gen_{}", num_generated), Span::call_site());
         num_generated += 1;
@@ -268,11 +294,22 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
     lexeme_callbacks.append_separated(
         lexeme_callback_names.into_iter().map(|name| {
             quote! {
-                #name as fn(&mut #state_type, &str) -> #out_type
+                #name as fn(&mut #state_type, &str) -> (#out_type, usize)
             }
         }),
         Punct::new(',', Spacing::Alone),
     );
+
+    let mut error_callbacks = TokenStream::new();
+    error_callbacks.append_separated(
+        error_callback_names.into_iter().map(|name| {
+            quote! {
+                #name as fn(&mut parser::CappedVec<{shared_structs::MAX_STATE_STACK}, #out_type>) -> #out_type
+            }
+        }),
+        Punct::new(',', Spacing::Alone),
+    );
+
     let mut rule_callbacks = TokenStream::new();
     rule_callbacks.append_separated(rule_callback_names.into_iter().map(|name| quote! {
         #name as fn(&mut parser::CappedVec<{shared_structs::MAX_STATE_STACK}, #out_type>) -> #out_type
@@ -287,7 +324,23 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         Punct::new(',', Spacing::Alone),
     );
 
+    let mut seen_productions = BTreeSet::new();
+    let mut kinds = vec![];
+    for prod in productions.iter() {
+        if !seen_productions.contains(&prod.name_raw) {
+            kinds.push(&prod.name);
+        }
+        seen_productions.insert(&prod.name_raw);
+    }
+    let kind_def = quote! {
+        #[derive(Clone, Copy, Debug)]
+        #[repr(u32)]
+        enum #kind_type { #(#kinds),* }
+    };
+
     Ok(quote! {
+        #kind_def
+
         fn create_parsing_engine() ->
             Result<parser::Engine<
                 #out_type,
@@ -299,12 +352,14 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                 #num_lex_states,
                 #num_update_states,
                 #num_parse_states,
-                #num_rules
+                #num_rules,
+                #num_error_callbacks
                 >,
                 &'static str
             >
         {
             #lexeme_callback_defs
+            #error_callback_defs
             #rule_callback_defs
             #update_callback_defs
             parser::Engine::from_raw(
@@ -314,6 +369,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                 #trie,
                 [#lexeme_callbacks],
                 [#update_callbacks],
+                [#error_callbacks],
                 [#rule_callbacks],
                 [#is_token_toks],
             )

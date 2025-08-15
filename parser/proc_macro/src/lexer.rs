@@ -20,14 +20,16 @@ const ERR_MISSING_PROD_TYPE: &'static str =
 const ERR_MISSING_PATT: &'static str =
     "ERROR: Expected parenthesized string pattern after Regex | Literal.";
 const ERR_PROD_NO_OUT_TYPE: &'static str =
-    "ERROR: Every production must start with <OutputType>::ProductionName =>";
+    "ERROR: Every production must start with ProductionName =>";
 const ERR_NO_CALLBACK: &'static str =
     "ERROR: Literal | Regex require a callback to be specified after the pattern";
+const ERR_NO_ERR_CALLBACK: &'static str = "ERROR: Error rules specified with ! must have a callback";
 
 pub enum ProductionType {
     Regex(String, ExprClosure),
     Literal(String, ExprClosure),
-    Rule(Vec<(Vec<Ident>, Option<ExprClosure>)>),
+    Rule(Vec<(Vec<Ident>, Option<ExprClosure>)>, Option<ExprClosure>),
+    None,
 }
 
 impl Debug for ProductionType {
@@ -46,7 +48,7 @@ impl Debug for ProductionType {
                 "ProductionType::Literal {{\n\tpattern: {patt},\n\tcallback: {}",
                 callback.to_token_stream().to_string()
             )?,
-            ProductionType::Rule(prods) => {
+            ProductionType::Rule(prods, _) => {
                 write!(f, "ProductionType::Rule([")?;
                 for (prod, callback) in prods {
                     write!(f, "\n\tproduction: [")?;
@@ -59,6 +61,7 @@ impl Debug for ProductionType {
                     write!(f, "] => {:?},", callback_string(callback))?;
                 }
             }
+            ProductionType::None => write!(f, "ProductionType::None")?
         }
         Ok(())
     }
@@ -74,6 +77,11 @@ pub struct Production {
 impl Parse for Production {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let name: Ident = input.parse().context(ERR_PROD_NO_OUT_TYPE)?;
+        if input.peek(Token![,]) {
+            return Ok(Production {
+                name_raw: name.to_string(), name, prod_type: ProductionType::None,
+            });
+        }
         input.parse::<Token![=>]>().context(ERR_PROD_NO_OUT_TYPE)?;
         let prod_type_raw = input.parse::<Ident>().context(ERR_MISSING_PROD_TYPE)?;
         let content;
@@ -91,6 +99,7 @@ impl Parse for Production {
             }
             "Rule" => {
                 let mut rules = vec![];
+                let mut error = None;
                 let mut last_was_ident = false;
                 loop {
                     if let Result::Ok(ident) = content.parse::<Ident>() {
@@ -99,7 +108,10 @@ impl Parse for Production {
                         }
                         rules.last_mut().unwrap().0.push(ident);
                         last_was_ident = true;
-                    } else if content.parse::<Token![,]>().is_ok() {
+                    } else if content.parse::<Token![!]>().is_ok() {
+                        error = Some(content.parse().context(ERR_NO_ERR_CALLBACK)?)
+                    }
+                    else if content.parse::<Token![,]>().is_ok() {
                         last_was_ident = false;
                     } else if last_was_ident
                         && let Result::Ok(callback) = content.parse::<ExprClosure>()
@@ -112,7 +124,7 @@ impl Parse for Production {
                         break;
                     }
                 }
-                Ok(ProductionType::Rule(rules))
+                Ok(ProductionType::Rule(rules, error))
             }
             _ => Err(Error::new(prod_type_raw.span(), ERR_INCORRECT_TOKEN_SPEC)),
         }?;
@@ -147,19 +159,23 @@ pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie,
             match &production.prod_type {
                 ProductionType::Regex(patt, _) => {
                     let production_id = update_ids(&mut production_ids, production.name_raw.as_str());
-                    regexi.push((patt.clone(), lexeme_i, production_id));
+                    regexi.push((patt.clone(), lexeme_i));
                     is_token[production_id] = true;
                     lexeme_i += 1;
                 }
                 ProductionType::Literal(patt, _) => {
                     let production_id = update_ids(&mut production_ids, production.name_raw.as_str());
-                    trie.insert(patt.as_bytes(), (lexeme_i, production_id));
+                    trie.insert(patt.as_bytes(), lexeme_i);
                     is_token[production_id] = true;
                     lexeme_i += 1;
                 }
-                ProductionType::Rule(_) => {
+                ProductionType::Rule(_, _) => {
                     is_token[production_ids.len()] = false;
                     production_ids.insert(production.name_raw.as_str(), production_ids.len());
+                }
+                ProductionType::None => {
+                    let production_id = update_ids(&mut production_ids, production.name_raw.as_str());
+                    is_token[production_id] = true;
                 }
             }
             (regexi, production_ids, is_token, lexeme_i)
@@ -170,22 +186,28 @@ pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie,
     let mut any_errors = false;
     // augment with eof token
     let mut rules: Vec<Vec<Vec<usize>>> = vec![vec![]; production_ids.len() + 1];
-    for (raw_components, rule_name) in productions
+    let mut error_ids: Vec<Option<usize>> = vec![None; production_ids.len() + 1];
+    let mut num_errors = 0usize;
+    for (raw_components, nonterminal, error) in productions
         .iter()
         .filter_map(|prod| match &prod.prod_type {
-            ProductionType::Rule(raw_components) => Some((raw_components, &prod.name_raw)),
+            ProductionType::Rule(raw_components, error) => Some((raw_components, &prod.name_raw, error)),
             _ => None,
         })
-        .flat_map(|(raw_components, rule_name)| {
+        .flat_map(|(raw_components, rule_name, error)| {
             raw_components
                 .iter()
-                .map(move |raw_components| (raw_components, rule_name))
+                .map(move |raw_components| (raw_components, rule_name, error))
         })
     {
-        let production_id = *production_ids.get(rule_name.as_str()).unwrap();
+        let production_id = *production_ids.get(nonterminal.as_str()).unwrap();
+        if error.is_some() {
+            error_ids[production_id] = Some(num_errors);
+            num_errors += 1;
+        }
         rules[production_id].push(raw_components.0.iter().map(|raw_component|
             *production_ids.get(&raw_component.to_string().as_str()).unwrap_or_else(|| {
-                eprintln!(r#"Reference to undefined production "{raw_component}" in definition of production "{rule_name}""#);
+                eprintln!(r#"Reference to undefined production "{raw_component}" in definition of production "{nonterminal}""#);
                 any_errors = true;
                 &0
             })
@@ -205,7 +227,7 @@ pub fn process_productions(productions: &Vec<Production>) -> (RegexDFA, DynTrie,
             item_name, productions[node].name
         )
     };
-    let parser = match DynParseTable::from_rules(rules) {
+    let parser = match DynParseTable::from_rules(rules, error_ids) {
         Err(conflicts) => {
             for conflict in conflicts {
                 match conflict {

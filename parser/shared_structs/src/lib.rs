@@ -6,8 +6,8 @@ use core::panic;
 pub use lexer::{DynTrie, RegexDFA, Trie, TrieNode};
 pub use parser::{Conflict, DynParseTable, ParseAction, ParseTable};
 use proc_macro2::TokenStream;
-use quote::{quote, ToTokens};
-use std::{fmt::Debug, marker::PhantomData, mem::MaybeUninit};
+use quote::{ToTokens, quote};
+use std::{collections::binary_heap::Iter, fmt::Debug, marker::PhantomData, mem::MaybeUninit};
 
 use crate::lexer::RegexTable;
 
@@ -95,7 +95,10 @@ impl<const N: usize, T: Clone> CappedVec<N, T> {
     }
 }
 
-pub struct Engine<
+pub struct Lexemes<
+    'a,
+    'b,
+    'c,
     N: Clone,
     S,
     const NUM_TERMINALS: usize,
@@ -106,30 +109,63 @@ pub struct Engine<
     const NUM_UPDATE_STATES: usize,
     const NUM_PARSE_STATES: usize,
     const NUM_RULES: usize,
+    const NUM_ERROR_CALLBACKS: usize,
+> {
+    engine: &'a Engine<
+        N,
+        S,
+        NUM_TERMINALS,
+        NUM_TOKENS,
+        NUM_LITERALS,
+        NUM_UPDATES,
+        NUM_LEX_STATES,
+        NUM_UPDATE_STATES,
+        NUM_PARSE_STATES,
+        NUM_RULES,
+        NUM_ERROR_CALLBACKS,
+    >,
+    pub state: &'b mut S,
+    pub s: &'c str,
+}
+
+pub struct Engine<
+    N: Clone,
+    S,
+    const NUM_TERMINAL_CALLBACKS: usize,
+    const NUM_TOKENS: usize,
+    const NUM_LITERALS: usize,
+    const NUM_UPDATES: usize,
+    const NUM_LEX_STATES: usize,
+    const NUM_UPDATE_STATES: usize,
+    const NUM_PARSE_STATES: usize,
+    const NUM_RULES: usize,
+    const NUM_ERROR_CALLBACKS: usize,
 > {
     parser: ParseTable<NUM_RULES, NUM_PARSE_STATES, NUM_TOKENS>,
     trie: Trie<NUM_LITERALS>,
     lexer: RegexTable<NUM_LEX_STATES>,
     lex_update: RegexTable<NUM_UPDATE_STATES>,
-    lexeme_callbacks: [fn(&mut S, &str) -> N; NUM_TERMINALS],
+    lexeme_callbacks: [fn(&mut S, &str) -> (N, usize); NUM_TERMINAL_CALLBACKS],
     update_callbacks: [fn(&mut S, &str); NUM_UPDATES],
+    error_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_ERROR_CALLBACKS],
     rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
     is_terminal: [bool; NUM_TOKENS],
     phantom_lex_state: PhantomData<S>,
 }
 
 impl<
-        N: Clone + Debug,
-        S,
-        const NUM_TERMINALS: usize,
-        const NUM_TOKENS: usize,
-        const NUM_LITERALS: usize,
-        const NUM_UPDATES: usize,
-        const NUM_LEX_STATES: usize,
-        const NUM_UPDATE_STATES: usize,
-        const NUM_PARSE_STATES: usize,
-        const NUM_RULES: usize,
-    >
+    N: Clone,
+    S,
+    const NUM_TERMINALS: usize,
+    const NUM_TOKENS: usize,
+    const NUM_LITERALS: usize,
+    const NUM_UPDATES: usize,
+    const NUM_LEX_STATES: usize,
+    const NUM_UPDATE_STATES: usize,
+    const NUM_PARSE_STATES: usize,
+    const NUM_RULES: usize,
+    const NUM_ERROR_CALLBACKS: usize,
+>
     Engine<
         N,
         S,
@@ -141,6 +177,7 @@ impl<
         NUM_UPDATE_STATES,
         NUM_PARSE_STATES,
         NUM_RULES,
+        NUM_ERROR_CALLBACKS,
     >
 {
     pub fn from_raw(
@@ -150,15 +187,16 @@ impl<
         ),
         lexer: (
             [[Option<usize>; 256]; NUM_LEX_STATES],
-            [Option<(usize, usize)>; NUM_LEX_STATES],
+            [Option<usize>; NUM_LEX_STATES],
         ),
         lex_update: (
             [[Option<usize>; 256]; NUM_UPDATE_STATES],
-            [Option<(usize, usize)>; NUM_UPDATE_STATES],
+            [Option<usize>; NUM_UPDATE_STATES],
         ),
-        trie: [(Option<(usize, usize)>, [Option<usize>; 256]); NUM_LITERALS],
-        lexeme_callbacks: [fn(&mut S, &str) -> N; NUM_TERMINALS],
+        trie: [(Option<usize>, [Option<usize>; 256]); NUM_LITERALS],
+        lexeme_callbacks: [fn(&mut S, &str) -> (N, usize); NUM_TERMINALS],
         update_callbacks: [fn(&mut S, &str); NUM_UPDATES],
+        error_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_ERROR_CALLBACKS],
         rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
         is_terminal: [bool; NUM_TOKENS],
     ) -> Result<Self, &'static str> {
@@ -174,6 +212,7 @@ impl<
                 fin: lex_update.1,
             },
             lexeme_callbacks,
+            error_callbacks,
             update_callbacks,
             rule_callbacks,
             is_terminal,
@@ -181,8 +220,8 @@ impl<
         })
     }
 
-    pub fn parse(&mut self, node: usize, mut s: &str, mut lex_state: S) -> Result<N, &'static str> {
-        let mut cur_lexeme = self.lex(&mut s, &mut lex_state);
+    pub fn parse(&mut self, node: usize, mut s: &str, lex_state: &mut S) -> Result<N, &'static str> {
+        let mut cur_lexeme = self.lex(&mut s, lex_state);
         if self.is_terminal[node]
             && let Ok((Some(_), lexeme_id)) = cur_lexeme.as_ref()
             && node == *lexeme_id
@@ -201,7 +240,7 @@ impl<
                     if let Ok((Some(lexeme), _)) = cur_lexeme {
                         node_stack.push(lexeme);
                     }
-                    cur_lexeme = self.lex(&mut s, &mut lex_state);
+                    cur_lexeme = self.lex(&mut s, lex_state);
                 }
                 ParseAction::Reduce(rule) => {
                     let (rule_len, non_terminal) = self.parser.rule_lens[rule];
@@ -236,11 +275,12 @@ impl<
         }
     }
 
-    fn lex(&mut self, s: &mut &str, state: &mut S) -> Result<(Option<N>, usize), &'static str> {
-        let (update_fin, update_len) = self.lex_update.query_longest(&s.as_bytes());
-        if let Some((update_id, _)) = update_fin {
+    pub fn lex(&self, s: &mut &str, state: &mut S) -> Result<(Option<N>, usize), &'static str> {
+        let (mut update_fin, mut update_len) = self.lex_update.query_longest(&s.as_bytes());
+        while let Some(update_id) = update_fin && update_len > 0 {
             (self.update_callbacks[update_id])(state, &s[0..update_len]);
             *s = &s[update_len..];
+            (update_fin, update_len) = self.lex_update.query_longest(&s.as_bytes());
         }
         if s.is_empty() {
             return Ok((None, self.parser.actions[0].len() - 1));
@@ -260,7 +300,7 @@ impl<
             && let Some(regex_fin) = regex_match
             && let Some(trie_fin) = trie_match
         {
-            if regex_fin.0 < trie_fin.0 {
+            if regex_fin < trie_fin {
                 Ok((regex_fin, regex_len))
             } else {
                 Ok((trie_fin, trie_len))
@@ -268,8 +308,78 @@ impl<
         } else {
             Err(ERR_INVALID_LEXEME)
         }?;
-        let lexeme = (self.lexeme_callbacks[fin.0])(state, &s[0..len]);
+        let (lexeme, id) = (self.lexeme_callbacks[fin])(state, &s[0..len]);
         *s = &s[len..];
-        Ok((Some(lexeme), fin.1))
+        Ok((Some(lexeme), id))
+    }
+
+    pub fn lexemes<'a, 'b, 'c>(
+        &'a self,
+        s: &'c str,
+        state: &'b mut S,
+    ) -> Lexemes<
+        'a,
+        'b,
+        'c,
+        N,
+        S,
+        NUM_TERMINALS,
+        NUM_TOKENS,
+        NUM_LITERALS,
+        NUM_UPDATES,
+        NUM_LEX_STATES,
+        NUM_UPDATE_STATES,
+        NUM_PARSE_STATES,
+        NUM_RULES,
+        NUM_ERROR_CALLBACKS,
+    > {
+        Lexemes {
+            engine: self,
+            s,
+            state,
+        }
+    }
+}
+
+impl<
+    'a,
+    'b,
+    'c,
+    N: Clone,
+    S,
+    const NUM_TERMINALS: usize,
+    const NUM_TOKENS: usize,
+    const NUM_LITERALS: usize,
+    const NUM_UPDATES: usize,
+    const NUM_LEX_STATES: usize,
+    const NUM_UPDATE_STATES: usize,
+    const NUM_PARSE_STATES: usize,
+    const NUM_RULES: usize,
+    const NUM_ERROR_CALLBACKS: usize,
+> Iterator
+    for Lexemes<
+        'a,
+        'b,
+        'c,
+        N,
+        S,
+        NUM_TERMINALS,
+        NUM_TOKENS,
+        NUM_LITERALS,
+        NUM_UPDATES,
+        NUM_LEX_STATES,
+        NUM_UPDATE_STATES,
+        NUM_PARSE_STATES,
+        NUM_RULES,
+        NUM_ERROR_CALLBACKS,
+    >
+{
+    type Item = Result<(N, usize), &'static str>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.engine.lex(&mut self.s, self.state) {
+            Ok((Some(l), id)) => Some(Ok((l, id))),
+            Ok((None, _)) => None,
+            Err(e) => Some(Err(e)),
+        }
     }
 }

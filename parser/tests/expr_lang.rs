@@ -67,6 +67,7 @@ fn term_node(factor: Node, mut term: Node) -> Node {
 parser::parser! {
     State(()),
     Output(Node),
+    Kind(NodeKind),
     Update(" *" |_, _| {}),
     Expr => Rule(
         Term Plus Expr |term, _, expr| expr_node(term, expr),
@@ -81,20 +82,21 @@ parser::parser! {
         LeftParen Expr RightParen |_, expr, _| expr
     ),
     Literal => Regex("[0-9]*" |_, text: &str| {
-        Node::Literal(text.parse().unwrap())
+        (Node::Literal(text.parse().unwrap()), NodeKind::Literal as usize)
     }),
-    Multiply => Literal("*" |_, _| Node::Multiply),
-    Multiply => Literal("x" |_, _| Node::Multiply),
-    Plus => Literal("+" |_, _| Node::Plus),
-    LeftParen => Literal("(" |_, _| Node::LeftParen),
-    RightParen => Literal(")" |_, _| Node::RightParen),
+    Multiply => Literal("*" |_, _| (Node::Multiply, NodeKind::Multiply as usize)),
+    Multiply => Literal("x" |_, _| (Node::Multiply, NodeKind::Multiply as usize)),
+    Plus => Literal("+" |_, _| (Node::Plus, NodeKind::Plus as usize)),
+    LeftParen => Literal("(" |_, _| (Node::LeftParen, NodeKind::LeftParen as usize)),
+    RightParen => Literal(")" |_, _| (Node::RightParen, NodeKind::RightParen as usize)),
 }
 
 #[test]
 fn parse_expression_language() {
     let s = String::from("1*7*(5+7)+3*(5+7*(6+9))x(6)");
     let mut engine = create_parsing_engine().unwrap();
-    let expr = engine.parse(0, &s, ()).unwrap();
+    let mut state = ();
+    let expr = engine.parse(NodeKind::Expr as usize, &s, &mut state).unwrap();
     dbg!(&expr);
     dbg!(expr.eval());
     assert_eq!(expr.eval(), 2064);
@@ -104,7 +106,8 @@ fn parse_expression_language() {
 fn parse_term() {
     let s = String::from("1  *7*(5+7  )");
     let mut engine = create_parsing_engine().unwrap();
-    let expr = engine.parse(1, &s, ()).unwrap();
+    let mut state = ();
+    let expr = engine.parse(NodeKind::Term as usize, &s, &mut state).unwrap();
     dbg!(&expr);
     dbg!(expr.eval());
     assert_eq!(expr.eval(), 84);
@@ -114,7 +117,8 @@ fn parse_term() {
 fn parse_literal() {
     let s = String::from("555");
     let mut engine = create_parsing_engine().unwrap();
-    let expr = engine.parse(3, &s, ()).unwrap();
+    let mut state = ();
+    let expr = engine.parse(NodeKind::Factor as usize, &s, &mut state).unwrap();
     println!("{}", expr);
     dbg!(expr.eval());
     assert_eq!(expr.eval(), 555);

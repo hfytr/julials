@@ -11,7 +11,7 @@ type NFAEdge = Option<(u8, u8)>;
 
 #[derive(Clone, Copy)]
 pub struct TrieNode {
-    pub fin: Option<(usize, usize)>,
+    pub fin: Option<usize>,
     pub children: [Option<usize>; 256],
 }
 
@@ -24,15 +24,15 @@ impl Debug for TrieNode {
 }
 
 impl TrieNode {
-    pub fn from_raw(fin: Option<(usize, usize)>, children: [Option<usize>; 256]) -> Self {
+    pub fn from_raw(fin: Option<usize>, children: [Option<usize>; 256]) -> Self {
         Self { fin, children }
     }
 }
 
 impl ToTokens for TrieNode {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let fin = if let Some((lexeme_id, node_id)) = self.fin {
-            quote! { Some((#lexeme_id, #node_id)) }
+        let fin = if let Some(lexeme_id) = self.fin {
+            quote! { Some(#lexeme_id) }
         } else {
             quote! { None }
         };
@@ -51,7 +51,7 @@ pub struct Trie<const NUM_LITERALS: usize>(pub [TrieNode; NUM_LITERALS]);
 
 impl<const NUM_LITERALS: usize> Trie<NUM_LITERALS> {
     pub fn from_raw(
-        trie_raw: [(Option<(usize, usize)>, [Option<usize>; 256]); NUM_LITERALS],
+        trie_raw: [(Option<usize>, [Option<usize>; 256]); NUM_LITERALS],
     ) -> Self {
         let mut nodes = [TrieNode {
             fin: None,
@@ -63,7 +63,7 @@ impl<const NUM_LITERALS: usize> Trie<NUM_LITERALS> {
         Trie(nodes)
     }
 
-    pub fn query_longest(&self, s: &[u8]) -> (Option<(usize, usize)>, usize) {
+    pub fn query_longest(&self, s: &[u8]) -> (Option<usize>, usize) {
         let mut cur_match = None;
         let mut match_len = 0;
         let mut cur = 0;
@@ -86,7 +86,7 @@ impl<const NUM_LITERALS: usize> Trie<NUM_LITERALS> {
 pub struct DynTrie(pub Vec<TrieNode>);
 
 impl DynTrie {
-    pub fn insert(&mut self, s: &[u8], x: (usize, usize)) {
+    pub fn insert(&mut self, s: &[u8], x: usize) {
         let mut cur = 0;
         for c in s {
             cur = self.0[cur].children[*c as usize].unwrap_or_else(|| {
@@ -140,11 +140,11 @@ impl ToTokens for Empty {
 #[derive(Debug)]
 pub struct RegexTable<const NUM_STATES: usize> {
     pub trans: [[Option<usize>; 256]; NUM_STATES],
-    pub fin: [Option<(usize, usize)>; NUM_STATES],
+    pub fin: [Option<usize>; NUM_STATES],
 }
 
 impl<const NUM_STATES: usize> RegexTable<NUM_STATES> {
-    pub fn query_longest(&self, s: &[u8]) -> (Option<(usize, usize)>, usize) {
+    pub fn query_longest(&self, s: &[u8]) -> (Option<usize>, usize) {
         let mut cur_match = None;
         let mut match_len = 0;
         let mut cur = 0;
@@ -166,7 +166,7 @@ impl<const NUM_STATES: usize> RegexTable<NUM_STATES> {
 pub struct RegexDFA {
     pub states: IndexableMap<USizeSet, Empty>,
     pub trans: Vec<[Option<usize>; 256]>,
-    pub fin: Vec<Option<(usize, usize)>>,
+    pub fin: Vec<Option<usize>>,
 }
 
 impl Debug for RegexDFA {
@@ -185,7 +185,7 @@ impl Debug for RegexDFA {
 }
 
 impl RegexDFA {
-    pub fn from_regexi(regexi: impl Iterator<Item = (String, usize, usize)>) -> Self {
+    pub fn from_regexi(regexi: impl Iterator<Item = (String, usize)>) -> Self {
         let nfa = NFA::from_regexi(regexi);
         let init_state = nfa.epsilon_closure(0);
         let mut res = Self {
@@ -265,8 +265,8 @@ impl ToTokens for RegexDFA {
         );
         let fin_inner = quote_option_vec(
             |fin| {
-                if let Some((lexeme_id, node_id)) = fin {
-                    quote! { Some((#lexeme_id, #node_id)) }
+                if let Some(lexeme_id) = fin {
+                    quote! { Some(#lexeme_id) }
                 } else {
                     quote! { None }
                 }
@@ -282,7 +282,7 @@ impl ToTokens for RegexDFA {
 #[derive(Debug)]
 struct NFA {
     edges: Vec<Vec<(NFAEdge, usize)>>,
-    fin: Vec<Option<(usize, usize)>>,
+    fin: Vec<Option<usize>>,
 }
 
 impl NFA {
@@ -311,14 +311,14 @@ impl NFA {
         res
     }
 
-    pub fn from_regexi(regexi: impl Iterator<Item = (String, usize, usize)>) -> Self {
+    pub fn from_regexi(regexi: impl Iterator<Item = (String, usize)>) -> Self {
         let mut init = Self::from_regex("", 0).0;
         init.fin = vec![None];
         regexi.fold(init, |mut acc, regex| {
             let (mut new_nfa, new_fin) = Self::from_regex(&regex.0, acc.fin.len());
             let len = acc.edges.len();
             acc.fin.resize(len + new_nfa.edges.len(), None);
-            acc.fin[new_fin] = Some((regex.1, regex.2));
+            acc.fin[new_fin] = Some(regex.1);
             acc.edges[0].push((None, len));
             acc.edges.append(&mut new_nfa.edges);
             acc
@@ -347,7 +347,6 @@ impl NFA {
                     escaped = true;
                     s = tail;
                 }
-                (Some(_), [b'*', ..]) if !escaped => panic!("ERROR: Used * in []."),
                 (None, [b'*', ..]) if in_group != 0 && !escaped => panic!("ERROR: Used * in ()."),
                 (_, [b'*', tail @ ..]) if !escaped => {
                     edges[last.1 - node_offset].push((None, last.0));
@@ -361,9 +360,8 @@ impl NFA {
                     last = (last.1, new_node);
                     s = tail;
                 }
-                (_, [b'-', tail @ ..]) if tail.len() != 0 => panic!("ERROR: Leading -"),
-                (_, [b'-', tail @ ..]) if tail.len() == 0 => panic!("ERROR: Trailing -"),
-                (None, [b'-', ..]) => panic!("ERROR: - Not in []."),
+                (Some(_), [b'-', tail @ ..]) if !escaped && tail.len() != 0 => panic!("ERROR: Leading -"),
+                (Some(_), [b'-', tail @ ..]) if !escaped && tail.len() == 0 => panic!("ERROR: Trailing -"),
                 (Some(_), [c0, b'-', c1, tail @ ..]) if *c0 != b'\\' => {
                     let mut c0 = *c0;
                     if escaped {

@@ -77,6 +77,7 @@ impl<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize>
 #[derive(Debug)]
 pub struct DynParseTable {
     pub actions: Vec<Vec<ParseAction>>,
+    pub errors: Vec<Option<usize>>,
     pub rule_lens: Vec<(usize, usize)>,
 }
 
@@ -86,7 +87,7 @@ pub enum Conflict {
 }
 
 impl DynParseTable {
-    pub fn from_rules(rules: Vec<Vec<Vec<usize>>>) -> Result<Self, Vec<Conflict>> {
+    pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, errors: Vec<Option<usize>>) -> Result<Self, Vec<Conflict>> {
         let dfa = ParseDFA::from_rules(rules);
         let mut conflicts = vec![];
         #[cfg(not(feature = "lr1"))]
@@ -115,8 +116,10 @@ impl DynParseTable {
                 i += 1;
             }
         }
+        let mut errors = vec![None; dfa.states.len()];
         for (i, (state, trans)) in dfa.states.iter().enumerate() {
             let (seeds, lookaheads) = &**state;
+            errors[i] = seeds.into_iter().filter_map(|(nt, _, _)| errors[*nt]).next();
             let id = state_ids[i];
             for (seed, lookahead) in seeds.into_iter().zip(lookaheads.into_iter()) {
                 for (item, next) in trans
@@ -148,7 +151,7 @@ impl DynParseTable {
         }
         conflicts
             .is_empty()
-            .then_some(Self { actions, rule_lens })
+            .then_some(Self { actions, rule_lens, errors })
             .ok_or(conflicts)
     }
 }
