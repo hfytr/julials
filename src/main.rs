@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use parser::{parser, Engine};
 
 #[derive(Debug)]
@@ -137,6 +139,17 @@ fn float_lit(state: &mut LexingState, mut text: &str, base: u32) -> (Node, usize
     (node, NodeKind::FloatLitL as usize)
 }
 
+fn str_lit(state: &mut LexingState, text: &'_ str) -> (Node, usize) {
+    let start = (state.line, state.col);
+    state.col += text.len();
+    let node = Node {
+        kind: NodeKind::StrLitL,
+        data: NodeData::String(text.to_string()),
+        span: get_span(state, start),
+    };
+    (node, NodeKind::StrLitL as usize)
+}
+
 parser! {
     State(LexingState),
     Output(Node),
@@ -167,6 +180,7 @@ parser! {
     FloatLitL => Regex("(-|)0o[0-7]*\\.[0-7][0-7]*" |state, text| float_lit(state, text, 8)),
     FloatLitL => Regex("(-|)[0-9]*\\.[0-9][0-9]*" |state, text| float_lit(state, text, 10)),
     FloatLitL => Regex("(-|)0x[0-9a-f]*[pP][0-9a-f][0-9a-f]*" |state, text| float_lit(state, text, 16)),
+    StrLitL => Regex("\"([^\"]|\\\\\")*\"" |state, text| str_lit(state, text)),
 
     FunctionL => Literal("function" |state, text| make_lit(state, text, NodeKind::FunctionL)),
     BeginL => Literal("begin" |state, text| make_lit(state, text, NodeKind::BeginL)),
@@ -249,8 +263,10 @@ parser! {
 // < comment > ::= '#' | /.*/  
 
 fn main() {
-    let mut engine: Engine<_, _, _, _, _, _, _, _, _, _, _> = create_parsing_engine().unwrap();
-    let s = String::from("-0x6a6paa");
+    let engine: Engine<_, _, _, _, _, _, _, _, _, _, _> = create_parsing_engine().unwrap();
+    let mut f = std::fs::File::open("../hipsat/ExaPowerIO.jl/src/ExaPowerIO.jl").unwrap();
+    let mut s = "\"hello thre\"".into();
+    f.read_to_string(&mut s).unwrap();
     let mut state = LexingState {
         file: String::new(),
         line: 0,
@@ -259,9 +275,5 @@ fn main() {
     };
     // dbg!(engine.parse(1, s.as_str(), &mut state));
     let mut iter = engine.lexemes(s.as_str(), &mut state);
-    while let Some(l) = iter.next() {
-        dbg!(l);
-        dbg!(&iter.state);
-        dbg!(&iter.s);
-    }
+    dbg!(iter.next());
 }

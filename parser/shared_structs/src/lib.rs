@@ -131,7 +131,7 @@ pub struct Lexemes<
 pub struct Engine<
     N: Clone,
     S,
-    const NUM_TERMINAL_CALLBACKS: usize,
+    const NUM_TERMINALS: usize,
     const NUM_TOKENS: usize,
     const NUM_LITERALS: usize,
     const NUM_UPDATES: usize,
@@ -139,18 +139,17 @@ pub struct Engine<
     const NUM_UPDATE_STATES: usize,
     const NUM_PARSE_STATES: usize,
     const NUM_RULES: usize,
-    const NUM_ERROR_CALLBACKS: usize,
+    const NUM_ERRORS: usize,
 > {
     parser: ParseTable<NUM_RULES, NUM_PARSE_STATES, NUM_TOKENS>,
     trie: Trie<NUM_LITERALS>,
     lexer: RegexTable<NUM_LEX_STATES>,
     lex_update: RegexTable<NUM_UPDATE_STATES>,
-    lexeme_callbacks: [fn(&mut S, &str) -> (N, usize); NUM_TERMINAL_CALLBACKS],
+    lexeme_callbacks: [fn(&mut S, &str) -> (N, usize); NUM_TERMINALS],
+    error_callbacks: [fn(CappedVec<MAX_STATE_STACK, N>) -> N; NUM_ERRORS],
     update_callbacks: [fn(&mut S, &str); NUM_UPDATES],
-    error_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_ERROR_CALLBACKS],
     rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
     is_terminal: [bool; NUM_TOKENS],
-    phantom_lex_state: PhantomData<S>,
 }
 
 impl<
@@ -184,6 +183,8 @@ impl<
         parser: (
             [[(usize, usize); NUM_TOKENS]; NUM_PARSE_STATES],
             [(usize, usize); NUM_RULES],
+            [Option<(usize, usize)>; NUM_PARSE_STATES],
+            [[bool; NUM_TOKENS]; NUM_TOKENS],
         ),
         lexer: (
             [[Option<usize>; 256]; NUM_LEX_STATES],
@@ -196,12 +197,12 @@ impl<
         trie: [(Option<usize>, [Option<usize>; 256]); NUM_LITERALS],
         lexeme_callbacks: [fn(&mut S, &str) -> (N, usize); NUM_TERMINALS],
         update_callbacks: [fn(&mut S, &str); NUM_UPDATES],
-        error_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_ERROR_CALLBACKS],
+        error_callbacks: [fn(CappedVec<MAX_STATE_STACK, N>) -> N; NUM_ERROR_CALLBACKS],
         rule_callbacks: [fn(&mut CappedVec<MAX_STATE_STACK, N>) -> N; NUM_RULES],
         is_terminal: [bool; NUM_TOKENS],
     ) -> Result<Self, &'static str> {
         Ok(Self {
-            parser: ParseTable::from_raw(parser.0, parser.1)?,
+            parser: ParseTable::from_raw(parser.0, parser.1, parser.2, parser.3)?,
             trie: Trie::from_raw(trie),
             lexer: RegexTable {
                 trans: lexer.0,
@@ -216,7 +217,6 @@ impl<
             update_callbacks,
             rule_callbacks,
             is_terminal,
-            phantom_lex_state: PhantomData,
         })
     }
 
@@ -233,7 +233,23 @@ impl<
         let mut state_stack: CappedVec<MAX_STATE_STACK, usize> = CappedVec::new();
         state_stack.push(node);
         let mut node_stack = CappedVec::new();
+        let mut error: Option<usize> = None;
         while let Ok((lexeme, lexeme_id)) = cur_lexeme.as_ref() {
+            if let Some(nonterminal) = error {
+                if self.parser.reductions[nonterminal][*lexeme_id] {
+                    error = None;
+                    let cur_state = *state_stack.last().unwrap();
+                    if let ParseAction::Goto(state) = self.parser.actions[cur_state][*lexeme_id] {
+                        state_stack.push(state);
+                    } else {
+                        panic!()
+                    }
+                } else {
+                    cur_lexeme = self.lex(&mut s, lex_state);
+                }
+                continue;
+            }
+
             match self.parser.actions[*state_stack.last().unwrap()][*lexeme_id] {
                 ParseAction::Shift(state) => {
                     state_stack.push(state);
@@ -261,7 +277,20 @@ impl<
                         },
                     )
                 }
-                ParseAction::Invalid => return Result::Err(ERR_SYNTAX_ERR),
+                ParseAction::Invalid => {
+                    let mut nodes = CappedVec::<MAX_STATE_STACK, N>::new();
+                    let mut err_callback = None;
+                    while let Some(state) = state_stack.last() {
+                        if let Some((error_id, nonterminal)) = self.parser.errors[*state] {
+                            error = Some(nonterminal);
+                            err_callback = Some(error_id);
+                            break;
+                        }
+                        nodes.push(node_stack.pop().unwrap());
+                        state_stack.pop();
+                    }
+                    node_stack.push((self.error_callbacks[err_callback.unwrap()])(nodes));
+                }
                 ParseAction::Goto(_) => return Result::Err(ERR_TERMINAL_GOTO),
             }
         }

@@ -342,8 +342,8 @@ impl NFA {
         let mut s = regex.as_bytes();
         while s.len() != 0 {
             match (sq, s) {
-                (_, [b'\\']) => panic!("ERROR: Last character is \\."),
-                (_, [b'\\', tail @ ..]) if tail.len() != 0 => {
+                (_, [b'\\']) if !escaped => panic!("ERROR: Last character is \\."),
+                (_, [b'\\', tail @ ..]) if !escaped && tail.len() != 0 => {
                     escaped = true;
                     s = tail;
                 }
@@ -352,7 +352,6 @@ impl NFA {
                     edges[last.1 - node_offset].push((None, last.0));
                     s = tail;
                 }
-                (Some(_), [b'.', ..]) if !escaped => panic!("ERROR: . in []"),
                 (None, [b'.', tail @ ..]) if !escaped => {
                     let new_node = edges.len() + node_offset;
                     edges[last.1 - node_offset].push((Some((u8::MIN, u8::MAX)), new_node));
@@ -418,6 +417,12 @@ impl NFA {
                     let mut start = 0;
                     let mut end = 0;
                     let mut in_feasible = false;
+                    if sq_not {
+                        for i in 0..4 {
+                            sq_chars[i] = !sq_chars[i];
+                        }
+                        sq_not = false;
+                    }
                     let get_u8_set = |i: u8| sq_chars[i as usize / 64] & (1 << (i % 64)) > 0;
                     for i in 0..=255 {
                         if get_u8_set(i) && in_feasible {

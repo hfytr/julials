@@ -120,11 +120,12 @@ pub struct USizeSetIterator<'a> {
 impl<'a> Iterator for USizeSetIterator<'a> {
     type Item = usize;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.cur == 0 && self.ind == 0 {
-            return None;
-        } else if self.cur == 0 {
+        while self.cur == 0 && self.ind > 0 {
             self.ind -= 1;
             self.cur = self.set.0[self.ind];
+        }
+        if self.cur == 0 {
+            return None;
         }
         let lsb = self.cur.trailing_zeros() as usize;
         self.cur ^= 1 << lsb;

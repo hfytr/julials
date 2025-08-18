@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use proc_macro2::{Punct, Spacing, TokenStream};
 use quote::{quote, ToTokens, TokenStreamExt};
 
-use crate::sets::{IndexableMap, USizeSet};
+use crate::{quote_option, sets::{IndexableMap, USizeSet}};
 
 const ERR_INVALID_PA_ID: &'static str = "Parse actions must have kind 0 / 1 / 2 / 3";
 
@@ -49,6 +49,8 @@ impl ToTokens for ParseAction {
 pub struct ParseTable<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize> {
     pub actions: [[ParseAction; NUM_TOKENS]; NUM_STATES],
     pub rule_lens: [(usize, usize); NUM_RULES],
+    pub errors: [Option<(usize, usize)>; NUM_STATES],
+    pub reductions: [[bool; NUM_TOKENS]; NUM_TOKENS]
 }
 
 impl<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize>
@@ -57,6 +59,8 @@ impl<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize>
     pub fn from_raw(
         actions_raw: [[(usize, usize); NUM_TOKENS]; NUM_STATES],
         rule_lens: [(usize, usize); NUM_RULES],
+        errors: [Option<(usize, usize)>; NUM_STATES],
+        reductions: [[bool; NUM_TOKENS]; NUM_TOKENS]
     ) -> Result<Self, &'static str> {
         let mut actions = [[ParseAction::Invalid; NUM_TOKENS]; NUM_STATES];
         for (i, state_actions) in actions_raw.into_iter().enumerate() {
@@ -70,14 +74,15 @@ impl<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize>
                 };
             }
         }
-        Ok(Self { actions, rule_lens })
+        Ok(Self { actions, rule_lens, errors, reductions })
     }
 }
 
 #[derive(Debug)]
 pub struct DynParseTable {
     pub actions: Vec<Vec<ParseAction>>,
-    pub errors: Vec<Option<usize>>,
+    errors: Vec<Option<(usize, usize)>>,
+    reductions: Vec<Vec<bool>>,
     pub rule_lens: Vec<(usize, usize)>,
 }
 
@@ -87,7 +92,7 @@ pub enum Conflict {
 }
 
 impl DynParseTable {
-    pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, errors: Vec<Option<usize>>) -> Result<Self, Vec<Conflict>> {
+    pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, error_callbacks: Vec<Option<usize>>) -> Result<Self, Vec<Conflict>> {
         let dfa = ParseDFA::from_rules(rules);
         let mut conflicts = vec![];
         #[cfg(not(feature = "lr1"))]
@@ -116,10 +121,10 @@ impl DynParseTable {
                 i += 1;
             }
         }
-        let mut errors = vec![None; dfa.states.len()];
+        let mut errors = vec![None; actions.len()];
+        let mut reductions = vec![vec![false; dfa.rules.len()]; dfa.rules.len()];
         for (i, (state, trans)) in dfa.states.iter().enumerate() {
             let (seeds, lookaheads) = &**state;
-            errors[i] = seeds.into_iter().filter_map(|(nt, _, _)| errors[*nt]).next();
             let id = state_ids[i];
             for (seed, lookahead) in seeds.into_iter().zip(lookaheads.into_iter()) {
                 for (item, next) in trans
@@ -133,6 +138,9 @@ impl DynParseTable {
                     actions[id][item] = if dfa.rules[item].len() == 0 {
                         ParseAction::Shift(state_ids[next])
                     } else {
+                        if let Some(error) = error_callbacks[item] {
+                            errors[state_ids[next]] = Some((error, item));
+                        }
                         ParseAction::Goto(state_ids[next])
                     };
                 }
@@ -144,6 +152,7 @@ impl DynParseTable {
                         {
                             conflicts.push(Conflict::RR(seed.0, seed.1, item));
                         }
+                        reductions[seed.0][item] = true;
                         actions[id][item] = ParseAction::Reduce(production);
                     }
                 }
@@ -151,30 +160,38 @@ impl DynParseTable {
         }
         conflicts
             .is_empty()
-            .then_some(Self { actions, rule_lens, errors })
+            .then_some(Self { actions, rule_lens, reductions, errors })
             .ok_or(conflicts)
     }
 }
 
 impl ToTokens for DynParseTable {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let mut actions_inner = TokenStream::new();
-        actions_inner.append_separated(
-            self.actions.iter().map(|state_actions| {
-                let mut state_inner = TokenStream::new();
-                state_inner.append_separated(state_actions.iter(), Punct::new(',', Spacing::Alone));
-                quote! { [#state_inner] }
-            }),
-            Punct::new(',', Spacing::Alone),
-        );
-        let mut rule_lens_inner = TokenStream::new();
-        rule_lens_inner.append_separated(
-            self.rule_lens
-                .iter()
-                .map(|(len, nt)| quote! { (#len, #nt) }),
-            Punct::new(',', Spacing::Alone),
-        );
-        tokens.append_all(quote! { ([#actions_inner], [#rule_lens_inner]) });
+        fn quote_2d<T: ToTokens>(a: &Vec<Vec<T>>) -> TokenStream {
+            let mut result_inner = TokenStream::new();
+            result_inner.append_separated(
+                a.iter().map(|v| {
+                    let mut row_inner = TokenStream::new();
+                    row_inner.append_separated(v.iter(), Punct::new(',', Spacing::Alone));
+                    quote! { [#row_inner] }
+                }),
+                Punct::new(',', Spacing::Alone),
+            );
+            quote! { [#result_inner] }
+        }
+        fn quote_1d<T, F: Fn(&T) -> TokenStream>(v: &Vec<T>, f: F) -> TokenStream {
+            let mut result_inner = TokenStream::new();
+            result_inner.append_separated(
+                v.iter().map(f)
+                , Punct::new(',', Spacing::Alone));
+            quote! { [#result_inner] }
+        }
+        let actions = quote_2d(&self.actions);
+        let reductions = quote_2d(&self.reductions);
+        let quote_pair = |(x, y): &(usize, usize)| quote! { (#x, #y) };
+        let rule_lens = quote_1d(&self.rule_lens, quote_pair);
+        let errors = quote_1d(&self.errors, |error| quote_option(&error.map(|e| quote_pair(&e))));
+        tokens.append_all(quote! { (#actions, #rule_lens, #errors, #reductions) });
     }
 }
 
