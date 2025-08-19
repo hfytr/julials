@@ -7,8 +7,6 @@ use proc_macro2::{Punct, Spacing, TokenStream};
 use quote::{quote, ToTokens, TokenStreamExt};
 use std::{collections::BTreeMap, fmt::Debug, rc::Rc};
 
-type NFAEdge = Option<(u8, u8)>;
-
 #[derive(Clone, Copy)]
 pub struct TrieNode {
     pub fin: Option<usize>,
@@ -137,10 +135,17 @@ impl ToTokens for Empty {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct RegexTable<const NUM_STATES: usize> {
     pub trans: [[Option<usize>; 256]; NUM_STATES],
     pub fin: [Option<usize>; NUM_STATES],
+}
+
+
+impl<const NUM_STATES: usize> Debug for RegexTable<NUM_STATES> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        RegexDFA::from_raw(self.clone()).fmt(f)
+    }
 }
 
 impl<const NUM_STATES: usize> RegexTable<NUM_STATES> {
@@ -171,16 +176,30 @@ pub struct RegexDFA {
 
 impl Debug for RegexDFA {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RegexDFA {\n    states: ")?;
-        self.states.fmt(f)?;
-        f.write_str("\n    fin: ")?;
-        self.fin.fmt(f)?;
-        f.write_str("\n    tran: ")?;
-        for tran in self.trans.iter() {
-            fmt_maybe_arr(f, tran)?;
-            f.write_str("\n    , ")?;
+        println!("{:?}", '\n');
+        write!(f, "RegexTable {{")?;
+        for (i, tran) in self.trans.iter().enumerate() {
+            if let Some(fin) = self.fin[i] {
+                write!(f, "\n    State {i} ({fin}): ")?;
+            } else {
+                write!(f, "\n    State {i}: ")?;
+            }
+            let mut cur = &None;
+            let mut start = u32::MAX;
+            for (j, state) in tran.iter().enumerate().map(|(j, s)| (j as u32, s)) {
+                if state != cur && j != 0 {
+                    if cur.is_some() {
+                        let start_c = char::from_u32(start).unwrap();
+                        let j_c = char::from_u32(j - 1).unwrap();
+                        write!(f, "{:?}-{:?}: {}, ", start_c, j_c, cur.as_ref().unwrap())?;
+                    }
+                    cur = state;
+                    start = j;
+                }
+            }
         }
-        f.write_str("}")
+        writeln!(f, "\n}}")?;
+        Ok(())
     }
 }
 
@@ -242,6 +261,14 @@ impl RegexDFA {
         }
         res
     }
+
+    pub fn from_raw<const N: usize>(raw: RegexTable<N>) -> Self {
+        Self {
+            states: IndexableMap::from([]),
+            trans: raw.trans.to_vec(),
+            fin: raw.fin.to_vec()
+        }
+    }
 }
 
 fn quote_option_vec<T, F: FnMut(&Option<T>) -> TokenStream>(
@@ -279,10 +306,30 @@ impl ToTokens for RegexDFA {
     }
 }
 
-#[derive(Debug)]
 struct NFA {
-    edges: Vec<Vec<(NFAEdge, usize)>>,
+    edges: Vec<Vec<(Option<(u8, u8)>, usize)>>,
     fin: Vec<Option<usize>>,
+}
+
+impl Debug for NFA {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        println!("{:?}", '\n');
+        write!(f, "NFA {{")?;
+        for (i, tran) in self.edges.iter().enumerate() {
+            write!(f, "\n    State {i}: ")?;
+            for (edge, state) in tran.iter() {
+                if let Some((start, end)) = edge {
+                    let start_c = char::from_u32(*start as u32).unwrap();
+                    let end_c = char::from_u32(*end as u32).unwrap();
+                    write!(f, "Some(({:?}, {:?})): {}, ", start_c, end_c, state)?;
+                } else {
+                    write!(f, "None: {state}, ")?;
+                }
+            }
+        }
+        writeln!(f, "\n}}")?;
+        Ok(())
+    }
 }
 
 impl NFA {
@@ -347,8 +394,8 @@ impl NFA {
                     escaped = true;
                     s = tail;
                 }
-                (None, [b'*', ..]) if in_group != 0 && !escaped => panic!("ERROR: Used * in ()."),
                 (_, [b'*', tail @ ..]) if !escaped => {
+                    edges[last.0 - node_offset].push((None, last.1));
                     edges[last.1 - node_offset].push((None, last.0));
                     s = tail;
                 }
@@ -442,14 +489,18 @@ impl NFA {
                     sq = None;
                     s = tail;
                 }
-                (None, [b'^', ..]) => panic!("ERROR: ^ not in []"),
-                (Some(_), [b'^', ..]) if sq_not => panic!("ERROR: Multiple ^ in []"),
-                (Some(_), [b'^', tail @ ..]) if !sq_not => {
+                (Some(_), [b'^', ..]) if !escaped && sq_not => panic!("ERROR: Multiple ^ in []"),
+                (Some(_), [b'^', tail @ ..]) if !escaped && !sq_not => {
                     sq_not = true;
                     s = tail;
                 }
                 (Some(_), [c, tail @ ..]) => {
-                    sq_chars[*c as usize / 64] |= 1 << (c % 64);
+                    let mut c = *c;
+                    if escaped {
+                        c = escape_lookup[c as usize].unwrap_or(c);
+                        escaped = false;
+                    }
+                    sq_chars[c as usize / 64] |= 1 << (c % 64);
                     s = tail;
                 }
                 (None, [c, tail @ ..]) => {
