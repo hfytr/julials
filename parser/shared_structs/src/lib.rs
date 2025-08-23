@@ -86,8 +86,8 @@ pub struct Engine<
     trie: Trie<NUM_LITERALS>,
     lexer: RegexTable<NUM_LEX_STATES>,
     lexeme_callbacks: [fn(&mut S, &str) -> Option<(N, usize)>; NUM_TERMINALS],
-    error_callbacks: [fn(Vec<N>) -> N; NUM_ERRORS],
-    rule_callbacks: [fn(&mut Vec<N>) -> N; NUM_RULES],
+    error_callbacks: [fn(&mut S, Vec<N>) -> N; NUM_ERRORS],
+    rule_callbacks: [fn(&mut S, &mut Vec<N>) -> N; NUM_RULES],
     is_terminal: [bool; NUM_TOKENS],
 }
 
@@ -127,8 +127,8 @@ impl<
         ),
         trie: [(Option<usize>, [Option<usize>; 256]); NUM_LITERALS],
         lexeme_callbacks: [fn(&mut S, &str) -> Option<(N, usize)>; NUM_TERMINALS],
-        error_callbacks: [fn(Vec<N>) -> N; NUM_ERROR_CALLBACKS],
-        rule_callbacks: [fn(&mut Vec<N>) -> N; NUM_RULES],
+        error_callbacks: [fn(&mut S, Vec<N>) -> N; NUM_ERROR_CALLBACKS],
+        rule_callbacks: [fn(&mut S, &mut Vec<N>) -> N; NUM_RULES],
         is_terminal: [bool; NUM_TOKENS],
     ) -> Result<Self, &'static str> {
         Ok(Self {
@@ -188,7 +188,7 @@ impl<
                     for _ in 0..rule_len {
                         state_stack.pop().ok_or(ERR_STATE_STACK_EMPTY)?;
                     }
-                    let new_node = (self.rule_callbacks[rule])(&mut node_stack);
+                    let new_node = (self.rule_callbacks[rule])(lex_state, &mut node_stack);
                     node_stack.push(new_node);
                     state_stack.push(
                         if let ParseAction::Goto(state) = self.parser.actions
@@ -217,7 +217,7 @@ impl<
                         nodes.push(node_stack.pop().unwrap());
                         state_stack.pop();
                     }
-                    node_stack.push((self.error_callbacks[err_callback.unwrap()])(nodes));
+                    node_stack.push((self.error_callbacks[err_callback.unwrap()])(lex_state, nodes));
                 }
                 ParseAction::Goto(_) => return Result::Err(ERR_TERMINAL_GOTO),
             }

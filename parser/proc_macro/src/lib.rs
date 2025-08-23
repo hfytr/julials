@@ -46,7 +46,7 @@ extern crate proc_macro;
 ///     where each rule is of the form: elem1 elem2 elem3 ... <optional-callback>
 ///     each elem is the name of a (not necessarily previously) defined token, and
 ///     the optional callback is a closure of the form:
-///       |elem1: Node, elem2: Node, ...| -> Node {...}
+///       |state: &mut State, elem1: Node, elem2: Node, ...| -> Node {...}
 #[proc_macro]
 pub fn parser(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = syn::parse(input).expect("Proc Macro errored parsing input.");
@@ -185,7 +185,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                 for _ in 0..(num_args - 1) {
                     closure_args.append_all(quote! {, _});
                 }
-                quote! { |#closure_args| node_1 }
+                quote! { |_, #closure_args| node_1 }
             });
 
         let callback_args_rev = (0..num_args)
@@ -197,10 +197,10 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
         let callback_args_iter = callback_args_rev.rev();
         let callback_args = quote! { #(#callback_args_iter),* };
         let callback = quote_spanned! { user_callback.span() =>
-            fn #callback_name(node_stack: &mut Vec<#out_type>) -> #out_type {
+            fn #callback_name(state: &mut #state_type, node_stack: &mut Vec<#out_type>) -> #out_type {
                 #stack_pops
                 let user_callback = #user_callback;
-                user_callback(#callback_args)
+                user_callback(state, #callback_args)
             }
         };
         (callback, callback_name)
@@ -240,6 +240,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                         num_generated,
                         parser.rule_lens[cur_rule].0,
                     );
+                    dbg!(callback.to_string());
                     num_generated += 1;
                     cur_rule += 1;
                     rule_callback_defs.append_all(callback);
@@ -249,7 +250,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                     let callback_name =
                         Ident::new(&format!("__gen_{}", num_generated), Span::call_site());
                     let callback = quote_spanned! { user_callback.span() =>
-                        fn #callback_name(vec: &Vec<#out_type>) -> #out_type {
+                        fn #callback_name(state: &mut #state_type, vec: &Vec<#out_type>) -> #out_type {
                             let user_callback = #user_callback;
                             user_callback(state, s)
                         }
@@ -277,7 +278,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
     error_callbacks.append_separated(
         error_callback_names.into_iter().map(|name| {
             quote! {
-                #name as fn(&mut Vec<#out_type>) -> #out_type
+                #name as fn(&mut #state_type, &mut Vec<#out_type>) -> #out_type
             }
         }),
         Punct::new(',', Spacing::Alone),
@@ -285,7 +286,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
 
     let mut rule_callbacks = TokenStream::new();
     rule_callbacks.append_separated(rule_callback_names.into_iter().map(|name| quote! {
-        #name as fn(&mut Vec<#out_type>) -> #out_type
+        #name as fn(&mut #state_type, &mut Vec<#out_type>) -> #out_type
     }), Punct::new(',', Spacing::Alone));
 
     let kinds = productions.iter().scan(BTreeSet::new(), |seen, prod| {

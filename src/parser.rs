@@ -197,8 +197,8 @@ parser::parser! {
     ExprList => Rule(
         Expr,
         TermL,
-        TermL ExprList |_, elist: Node| elist,
-        Expr TermL ExprList |e, _, elist: Node| expr_list(e, elist)
+        TermL ExprList |_, _, elist: Node| elist,
+        Expr TermL ExprList |_, e, _, elist: Node| expr_list(e, elist)
     ),
 
     Expr => Rule(IdentifierL),
