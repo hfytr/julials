@@ -68,6 +68,7 @@ parser::parser! {
     State(()),
     Output(Node),
     Kind(NodeKind),
+    GenertedFn(create_parsing_engine),
     Update(" *" |_, _| {}),
     Expr => Rule(
         Term Plus Expr |term, _, expr| expr_node(term, expr),
