@@ -3,7 +3,10 @@ use std::fmt::Debug;
 use proc_macro2::{Punct, Spacing, TokenStream};
 use quote::{quote, ToTokens, TokenStreamExt};
 
-use crate::{quote_option, sets::{IndexableMap, USizeSet}};
+use crate::{
+    quote_option,
+    sets::{IndexableMap, USizeSet},
+};
 
 const ERR_INVALID_PA_ID: &'static str = "Parse actions must have kind 0 / 1 / 2 / 3";
 
@@ -50,7 +53,7 @@ pub struct ParseTable<const NUM_RULES: usize, const NUM_STATES: usize, const NUM
     pub actions: [[ParseAction; NUM_TOKENS]; NUM_STATES],
     pub rule_lens: [(usize, usize); NUM_RULES],
     pub errors: [Option<(usize, usize)>; NUM_STATES],
-    pub reductions: [[bool; NUM_TOKENS]; NUM_TOKENS]
+    pub reductions: [[bool; NUM_TOKENS]; NUM_TOKENS],
 }
 
 impl<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize>
@@ -60,7 +63,7 @@ impl<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize>
         actions_raw: [[(usize, usize); NUM_TOKENS]; NUM_STATES],
         rule_lens: [(usize, usize); NUM_RULES],
         errors: [Option<(usize, usize)>; NUM_STATES],
-        reductions: [[bool; NUM_TOKENS]; NUM_TOKENS]
+        reductions: [[bool; NUM_TOKENS]; NUM_TOKENS],
     ) -> Result<Self, &'static str> {
         let mut actions = [[ParseAction::Invalid; NUM_TOKENS]; NUM_STATES];
         for (i, state_actions) in actions_raw.into_iter().enumerate() {
@@ -74,7 +77,12 @@ impl<const NUM_RULES: usize, const NUM_STATES: usize, const NUM_TOKENS: usize>
                 };
             }
         }
-        Ok(Self { actions, rule_lens, errors, reductions })
+        Ok(Self {
+            actions,
+            rule_lens,
+            errors,
+            reductions,
+        })
     }
 }
 
@@ -92,7 +100,10 @@ pub enum Conflict {
 }
 
 impl DynParseTable {
-    pub fn from_rules(rules: Vec<Vec<Vec<usize>>>, error_callbacks: Vec<Option<usize>>) -> Result<Self, Vec<Conflict>> {
+    pub fn from_rules(
+        rules: Vec<Vec<Vec<usize>>>,
+        error_callbacks: Vec<Option<usize>>,
+    ) -> Result<Self, Vec<Conflict>> {
         let dfa = ParseDFA::from_rules(rules);
         let mut conflicts = vec![];
         #[cfg(not(feature = "lr1"))]
@@ -160,7 +171,12 @@ impl DynParseTable {
         }
         conflicts
             .is_empty()
-            .then_some(Self { actions, rule_lens, reductions, errors })
+            .then_some(Self {
+                actions,
+                rule_lens,
+                reductions,
+                errors,
+            })
             .ok_or(conflicts)
     }
 }
@@ -181,16 +197,16 @@ impl ToTokens for DynParseTable {
         }
         fn quote_1d<T, F: Fn(&T) -> TokenStream>(v: &Vec<T>, f: F) -> TokenStream {
             let mut result_inner = TokenStream::new();
-            result_inner.append_separated(
-                v.iter().map(f)
-                , Punct::new(',', Spacing::Alone));
+            result_inner.append_separated(v.iter().map(f), Punct::new(',', Spacing::Alone));
             quote! { [#result_inner] }
         }
         let actions = quote_2d(&self.actions);
         let reductions = quote_2d(&self.reductions);
         let quote_pair = |(x, y): &(usize, usize)| quote! { (#x, #y) };
         let rule_lens = quote_1d(&self.rule_lens, quote_pair);
-        let errors = quote_1d(&self.errors, |error| quote_option(&error.map(|e| quote_pair(&e))));
+        let errors = quote_1d(&self.errors, |error| {
+            quote_option(&error.map(|e| quote_pair(&e)))
+        });
         tokens.append_all(quote! { (#actions, #rule_lens, #errors, #reductions) });
     }
 }

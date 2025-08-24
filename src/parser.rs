@@ -1,56 +1,23 @@
-#[derive(Debug, Clone)]
-pub enum NodeData {
-    IntLit(i128),
-    UIntLit(u128),
-    FloatLit(f64),
-    String(String),
-    VarKids(Vec<Box<Node>>),
-    None,
-    Error,
-}
-
-#[derive(Clone, Debug)]
-pub struct Span {
-    file: String,
-    start: (usize, usize),
-    end: (usize, usize),
-}
-
-impl Span {
-    pub fn merge(self, rhs: &Self) -> Self {
-        assert_eq!(self.file, rhs.file);
-        Self {
-            file: self.file,
-            start: self.start.min(rhs.start),
-            end: self.end.min(rhs.end),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Node {
-    pub kind: NodeKind,
-    pub span: Span,
-    pub data: NodeData,
-}
+use crate::ast::{Node, NodeData, Span, AST};
 
 #[derive(Debug)]
-pub struct LexingState {
-    pub file: String,
+pub struct ParseState {
+    pub file_ind: usize,
     pub errors: Vec<String>,
     pub line: usize,
     pub col: usize,
+    pub ast: AST,
 }
 
-fn get_span(state: &'_ mut LexingState, start: (usize, usize)) -> Span {
-    Span {
-        file: state.file.clone(),
-        start,
-        end: (state.line, state.col),
-    }
+fn get_span(state: &'_ mut ParseState, start: (usize, usize)) -> Span {
+    Span::new(state.file_ind, start, (state.line, state.col))
 }
 
-fn make_lit<'a>(state: &'a mut LexingState, text: &'_ str, kind: NodeKind) -> Option<(Node, usize)> {
+fn make_lit<'a>(
+    state: &'a mut ParseState,
+    text: &'_ str,
+    kind: NodeKind,
+) -> Option<(usize, usize)> {
     let start = (state.line, state.col);
     state.col += text.len();
     let node = Node {
@@ -58,10 +25,10 @@ fn make_lit<'a>(state: &'a mut LexingState, text: &'_ str, kind: NodeKind) -> Op
         span: get_span(state, start),
         data: NodeData::None,
     };
-    Some((node, kind as usize))
+    Some((state.ast.push(node), kind as usize))
 }
 
-fn new_line(state: &mut LexingState) -> Option<(Node, usize)> {
+fn new_line(state: &mut ParseState) -> Option<(usize, usize)> {
     state.col = 0;
     state.line += 1;
     let node = Node {
@@ -69,10 +36,10 @@ fn new_line(state: &mut LexingState) -> Option<(Node, usize)> {
         span: get_span(state, (state.line, state.col)),
         data: NodeData::None,
     };
-    Some((node, NodeKind::TermL as usize))
+    Some((state.ast.push(node), NodeKind::TermL as usize))
 }
 
-fn int_lit(state: &mut LexingState, mut text: &str, base: u32) -> Option<(Node, usize)> {
+fn int_lit(state: &mut ParseState, mut text: &str, base: u32) -> Option<(usize, usize)> {
     let start = (state.line, state.col);
     state.col += text.len();
     let neg = text.as_bytes()[0] == b'-';
@@ -98,10 +65,10 @@ fn int_lit(state: &mut LexingState, mut text: &str, base: u32) -> Option<(Node, 
         data,
         span: get_span(state, start),
     };
-    Some((node, kind as usize))
+    Some((state.ast.push(node), kind as usize))
 }
 
-fn float_lit(state: &mut LexingState, text: &str, base: u32) -> Option<(Node, usize)> {
+fn float_lit(state: &mut ParseState, text: &str, base: u32) -> Option<(usize, usize)> {
     let start = (state.line, state.col);
     state.col += text.len();
     let pred = if base == 16 {
@@ -155,10 +122,10 @@ fn float_lit(state: &mut LexingState, text: &str, base: u32) -> Option<(Node, us
         span: get_span(state, start),
         data: NodeData::FloatLit(val),
     };
-    Some((node, NodeKind::FloatLitL as usize))
+    Some((state.ast.push(node), NodeKind::FloatLitL as usize))
 }
 
-fn str_lit(state: &mut LexingState, text: &'_ str) -> Option<(Node, usize)> {
+fn str_lit(state: &mut ParseState, text: &'_ str) -> Option<(usize, usize)> {
     let start = (state.line, state.col);
     state.col += text.len();
     let node = Node {
@@ -166,44 +133,44 @@ fn str_lit(state: &mut LexingState, text: &'_ str) -> Option<(Node, usize)> {
         data: NodeData::String(text.to_string()),
         span: get_span(state, start),
     };
-    Some((node, NodeKind::StrLitL as usize))
+    Some((state.ast.push(node), NodeKind::StrLitL as usize))
 }
 
-fn expr_list(expr: Node, expr_list: Node) -> Node {
+fn expr_list(state: &mut ParseState, expr_id: usize, expr_list_id: usize) -> usize {
+    let [expr, expr_list] = state.ast.get_mut([expr_id, expr_list_id]);
     if let Node {
         span,
-        data: NodeData::VarKids(mut kids),
-        kind: kind @ NodeKind::ExprList,
+        data: NodeData::VarKids(kids),
+        ..
     } = expr_list
     {
-        let span = span.merge(&expr.span);
-        kids.push(Box::new(expr));
-        let data = NodeData::VarKids(kids);
-        Node { kind, span, data }
+        span.merge_with(&expr.span);
+        kids.push(expr_id);
+        expr_list_id
     } else {
-        panic!()
+        panic!();
     }
 }
 
 parser::parser! {
-    State(LexingState),
-    Output(Node),
+    State(ParseState),
+    Output(usize),
     Kind(pub NodeKind),
     GeneratedFn(pub make_parser),
-    _ => Regex("[ \t]*" |state: &mut LexingState, text: &str| {state.col += text.len(); None}),
+    _ => Regex("[ \t]*" |state: &mut ParseState, text: &str| {state.col += text.len(); None}),
     _ => Regex("#=([^=]|=[^#])*=#" |_, _| { None }),
-    _ => Regex("#[^\\n]*" |state: &mut LexingState, text: &str| {state.col += text.len(); None}),
+    _ => Regex("#[^\\n]*" |state: &mut ParseState, text: &str| {state.col += text.len(); None}),
 
     ExprList => Rule(
         Expr,
         TermL,
-        TermL ExprList |_, _, elist: Node| elist,
-        Expr TermL ExprList |_, e, _, elist: Node| expr_list(e, elist)
+        TermL ExprList |_, _, elist| elist,
+        Expr TermL ExprList |state, e, _, elist| expr_list(state, e, elist)
     ),
 
     Expr => Rule(IdentifierL),
 
-    IdentifierL => Regex("[a-zA-Z_][a-zA-Z0-9_]*" |state: &mut LexingState, text: &str| {
+    IdentifierL => Regex("[a-zA-Z_][a-zA-Z0-9_]*" |state: &mut ParseState, text: &str| {
         let start = (state.line, state.col);
         state.col += text.len();
         let node = Node {
@@ -211,7 +178,7 @@ parser::parser! {
             span: get_span(state, start),
             data: NodeData::String(text.to_string())
         };
-        Some((node, NodeKind::IdentifierL as usize))
+        Some((state.ast.push(node), NodeKind::IdentifierL as usize))
     }),
 
     UIntLitL,

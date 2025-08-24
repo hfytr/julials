@@ -48,9 +48,7 @@ impl ToTokens for TrieNode {
 pub struct Trie<const NUM_LITERALS: usize>(pub [TrieNode; NUM_LITERALS]);
 
 impl<const NUM_LITERALS: usize> Trie<NUM_LITERALS> {
-    pub fn from_raw(
-        trie_raw: [(Option<usize>, [Option<usize>; 256]); NUM_LITERALS],
-    ) -> Self {
+    pub fn from_raw(trie_raw: [(Option<usize>, [Option<usize>; 256]); NUM_LITERALS]) -> Self {
         let mut nodes = [TrieNode {
             fin: None,
             children: [None; 256],
@@ -140,7 +138,6 @@ pub struct RegexTable<const NUM_STATES: usize> {
     pub trans: [[Option<usize>; 256]; NUM_STATES],
     pub fin: [Option<usize>; NUM_STATES],
 }
-
 
 impl<const NUM_STATES: usize> Debug for RegexTable<NUM_STATES> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -266,7 +263,7 @@ impl RegexDFA {
         Self {
             states: IndexableMap::from([]),
             trans: raw.trans.to_vec(),
-            fin: raw.fin.to_vec()
+            fin: raw.fin.to_vec(),
         }
     }
 }
@@ -406,8 +403,12 @@ impl NFA {
                     last = (last.1, new_node);
                     s = tail;
                 }
-                (Some(_), [b'-', tail @ ..]) if !escaped && tail.len() != 0 => panic!("ERROR: Leading -"),
-                (Some(_), [b'-', tail @ ..]) if !escaped && tail.len() == 0 => panic!("ERROR: Trailing -"),
+                (Some(_), [b'-', tail @ ..]) if !escaped && tail.len() != 0 => {
+                    panic!("ERROR: Leading -")
+                }
+                (Some(_), [b'-', tail @ ..]) if !escaped && tail.len() == 0 => {
+                    panic!("ERROR: Trailing -")
+                }
                 (Some(_), [c0, b'-', c1, tail @ ..]) if *c0 != b'\\' => {
                     let mut c0 = *c0;
                     if escaped {

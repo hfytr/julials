@@ -3,11 +3,11 @@ mod parser;
 mod sets;
 
 use core::panic;
-use std::fmt::Debug;
 pub use lexer::{DynTrie, RegexDFA, Trie, TrieNode};
 pub use parser::{Conflict, DynParseTable, ParseAction, ParseTable};
 use proc_macro2::TokenStream;
-use quote::{ToTokens, quote};
+use quote::{quote, ToTokens};
+use std::fmt::Debug;
 
 use crate::lexer::RegexTable;
 
@@ -92,16 +92,16 @@ pub struct Engine<
 }
 
 impl<
-    N: Clone + Debug,
-    S,
-    const NUM_TERMINALS: usize,
-    const NUM_TOKENS: usize,
-    const NUM_LITERALS: usize,
-    const NUM_LEX_STATES: usize,
-    const NUM_PARSE_STATES: usize,
-    const NUM_RULES: usize,
-    const NUM_ERROR_CALLBACKS: usize,
->
+        N: Clone + Debug,
+        S,
+        const NUM_TERMINALS: usize,
+        const NUM_TOKENS: usize,
+        const NUM_LITERALS: usize,
+        const NUM_LEX_STATES: usize,
+        const NUM_PARSE_STATES: usize,
+        const NUM_RULES: usize,
+        const NUM_ERROR_CALLBACKS: usize,
+    >
     Engine<
         N,
         S,
@@ -145,7 +145,12 @@ impl<
         })
     }
 
-    pub fn parse(&mut self, node: impl Into<usize>, mut s: &str, lex_state: &mut S) -> Result<N, &'static str> {
+    pub fn parse(
+        &mut self,
+        node: impl Into<usize>,
+        mut s: &str,
+        lex_state: &mut S,
+    ) -> Result<N, &'static str> {
         let node: usize = node.into();
         let mut cur_lexeme = self.lex(&mut s, lex_state);
         if self.is_terminal[node]
@@ -158,7 +163,7 @@ impl<
         }
         let mut state_stack: Vec<usize> = vec![];
         state_stack.push(node);
-        let mut node_stack = vec!{};
+        let mut node_stack = vec![];
         let mut error: Option<usize> = None;
         while let Ok((lexeme, lexeme_id)) = cur_lexeme.as_ref() {
             if let Some(nonterminal) = error {
@@ -208,7 +213,9 @@ impl<
                     }
                     let mut nodes = vec![];
                     let mut err_callback = None;
-                    while let Some(state) = state_stack.last() && !node_stack.is_empty() {
+                    while let Some(state) = state_stack.last()
+                        && !node_stack.is_empty()
+                    {
                         if let Some((error_id, nonterminal)) = self.parser.errors[*state] {
                             error = Some(nonterminal);
                             err_callback = Some(error_id);
@@ -217,7 +224,9 @@ impl<
                         nodes.push(node_stack.pop().unwrap());
                         state_stack.pop();
                     }
-                    node_stack.push((self.error_callbacks[err_callback.unwrap()])(lex_state, nodes));
+                    node_stack.push((self.error_callbacks[err_callback.unwrap()])(
+                        lex_state, nodes,
+                    ));
                 }
                 ParseAction::Goto(_) => return Result::Err(ERR_TERMINAL_GOTO),
             }
@@ -233,7 +242,7 @@ impl<
     }
 
     pub fn lex(&self, s: &mut &str, state: &mut S) -> Result<(Option<N>, usize), &'static str> {
-        let mut cur_lexeme = None; 
+        let mut cur_lexeme = None;
         while cur_lexeme.is_none() {
             if s.is_empty() {
                 return Ok((None, NUM_TOKENS - 1));
@@ -295,19 +304,19 @@ impl<
 }
 
 impl<
-    'a,
-    'b,
-    'c,
-    N: Clone + Debug,
-    S,
-    const NUM_TERMINALS: usize,
-    const NUM_TOKENS: usize,
-    const NUM_LITERALS: usize,
-    const NUM_LEX_STATES: usize,
-    const NUM_PARSE_STATES: usize,
-    const NUM_RULES: usize,
-    const NUM_ERROR_CALLBACKS: usize,
-> Iterator
+        'a,
+        'b,
+        'c,
+        N: Clone + Debug,
+        S,
+        const NUM_TERMINALS: usize,
+        const NUM_TOKENS: usize,
+        const NUM_LITERALS: usize,
+        const NUM_LEX_STATES: usize,
+        const NUM_PARSE_STATES: usize,
+        const NUM_RULES: usize,
+        const NUM_ERROR_CALLBACKS: usize,
+    > Iterator
     for Lexemes<
         'a,
         'b,

@@ -97,7 +97,9 @@ fn parse_expression_language() {
     let s = String::from("1*7*(5+7)+3*(5+7*(6+9))x(6)");
     let mut engine = create_parsing_engine().unwrap();
     let mut state = ();
-    let expr = engine.parse(NodeKind::Expr as usize, &s, &mut state).unwrap();
+    let expr = engine
+        .parse(NodeKind::Expr as usize, &s, &mut state)
+        .unwrap();
     dbg!(&expr);
     dbg!(expr.eval());
     assert_eq!(expr.eval(), 2064);
@@ -108,7 +110,9 @@ fn parse_term() {
     let s = String::from("1  *7*(5+7  )");
     let mut engine = create_parsing_engine().unwrap();
     let mut state = ();
-    let expr = engine.parse(NodeKind::Term as usize, &s, &mut state).unwrap();
+    let expr = engine
+        .parse(NodeKind::Term as usize, &s, &mut state)
+        .unwrap();
     dbg!(&expr);
     dbg!(expr.eval());
     assert_eq!(expr.eval(), 84);
@@ -119,7 +123,9 @@ fn parse_literal() {
     let s = String::from("555");
     let mut engine = create_parsing_engine().unwrap();
     let mut state = ();
-    let expr = engine.parse(NodeKind::Factor as usize, &s, &mut state).unwrap();
+    let expr = engine
+        .parse(NodeKind::Factor as usize, &s, &mut state)
+        .unwrap();
     println!("{}", expr);
     dbg!(expr.eval());
     assert_eq!(expr.eval(), 555);

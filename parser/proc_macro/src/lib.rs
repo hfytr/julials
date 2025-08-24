@@ -20,7 +20,8 @@ const ERR_MISSING_STATE_TYPE: &'static str =
 const ERR_MISSING_OUT_TYPE: &'static str =
     "ERROR: Expected parenthesized output type after Output element.";
 const ERR_NO_OUT_TYPE: &'static str = "ERROR: You must specify the output type with Output(...)";
-const ERR_GEN_FN_NOT_SPECIFIED: &'static str = "ERROR: You must specify the generated function with GeneretedFn(...)";
+const ERR_GEN_FN_NOT_SPECIFIED: &'static str =
+    "ERROR: You must specify the generated function with GeneretedFn(...)";
 
 extern crate proc_macro;
 
@@ -116,7 +117,8 @@ impl Parse for MacroBody {
                     let content;
                     syn::parenthesized!(content in input);
                     generated_fn_vis = content.parse::<Visibility>().ok();
-                    generated_fn_name = Some(content.parse::<Ident>().context(ERR_MISSING_OUT_TYPE)?);
+                    generated_fn_name =
+                        Some(content.parse::<Ident>().context(ERR_MISSING_OUT_TYPE)?);
                 } else {
                     panic!();
                 }
@@ -131,7 +133,8 @@ impl Parse for MacroBody {
         let out_type = out_type.ok_or(Error::new(tot_span, ERR_NO_OUT_TYPE))?;
         let state_type = state_type.ok_or(Error::new(tot_span, ERR_STATE_NOT_SPECIFIED))?;
         let kind_type = kind_type.ok_or(Error::new(tot_span, ERR_KIND_NOT_SPECIFIED))?;
-        let generated_fn_name = generated_fn_name.ok_or(Error::new(tot_span, ERR_GEN_FN_NOT_SPECIFIED))?;
+        let generated_fn_name =
+            generated_fn_name.ok_or(Error::new(tot_span, ERR_GEN_FN_NOT_SPECIFIED))?;
 
         let result = Ok(Self {
             out_type: quote! { #out_type },
@@ -144,7 +147,7 @@ impl Parse for MacroBody {
             trie,
             parser,
             num_tokens,
-            is_token
+            is_token,
         });
         result
     }
@@ -170,7 +173,7 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
     let num_parse_states = parser.actions.len();
     let num_rules = parser.rule_lens.len();
     let mut is_token_toks = TokenStream::new();
-    is_token_toks.append_separated(is_token .iter(), Punct::new(',', Spacing::Alone));
+    is_token_toks.append_separated(is_token.iter(), Punct::new(',', Spacing::Alone));
     is_token_toks.append_all(quote! { , true });
 
     let make_rule_callback = |maybe_user_callback: Option<&ExprClosure>,
@@ -218,10 +221,10 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
 
     for production in productions.iter() {
         match &production {
-            Production::Lexeme{callback, ..} |Production::Update { callback, .. } => {
+            Production::Lexeme { callback, .. } | Production::Update { callback, .. } => {
                 let callback_name =
                     Ident::new(&format!("__gen_{}", num_generated), Span::call_site());
-                let callback = quote_spanned! { callback.span() => 
+                let callback = quote_spanned! { callback.span() =>
                     fn #callback_name(state: &mut #state_type, s: &str) -> Option<(#out_type, usize)> {
                         let user_callback = #callback;
                         user_callback(state, s)
@@ -232,15 +235,14 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
                 lexeme_callback_defs.append_all(callback);
                 lexeme_callback_names.push(callback_name);
             }
-            Production::None {..} => {},
-            Production::Rule{rules, error, ..} => {
+            Production::None { .. } => {}
+            Production::Rule { rules, error, .. } => {
                 for (_, callback) in rules {
                     let (callback, callback_name) = make_rule_callback(
                         callback.as_ref(),
                         num_generated,
                         parser.rule_lens[cur_rule].0,
                     );
-                    dbg!(callback.to_string());
                     num_generated += 1;
                     cur_rule += 1;
                     rule_callback_defs.append_all(callback);
@@ -285,17 +287,28 @@ fn parser2(input: TokenStream) -> Result<TokenStream, Error> {
     );
 
     let mut rule_callbacks = TokenStream::new();
-    rule_callbacks.append_separated(rule_callback_names.into_iter().map(|name| quote! {
-        #name as fn(&mut #state_type, &mut Vec<#out_type>) -> #out_type
-    }), Punct::new(',', Spacing::Alone));
+    rule_callbacks.append_separated(
+        rule_callback_names.into_iter().map(|name| {
+            quote! {
+                #name as fn(&mut #state_type, &mut Vec<#out_type>) -> #out_type
+            }
+        }),
+        Punct::new(',', Spacing::Alone),
+    );
 
-    let kinds = productions.iter().scan(BTreeSet::new(), |seen, prod| {
-        if let Some((name, name_raw)) = prod.get_name() && !seen.contains(name_raw) {
-            seen.insert(name_raw);
-            return Some(Some(name))
-        }
-        return Some(None)
-    }).filter_map(|k| k).collect::<Vec<_>>();
+    let kinds = productions
+        .iter()
+        .scan(BTreeSet::new(), |seen, prod| {
+            if let Some((name, name_raw)) = prod.get_name()
+                && !seen.contains(name_raw)
+            {
+                seen.insert(name_raw);
+                return Some(Some(name));
+            }
+            return Some(None);
+        })
+        .filter_map(|k| k)
+        .collect::<Vec<_>>();
     let kind_def = quote! {
         #[derive(Clone, Copy, Debug)]
         #[repr(u16)]
